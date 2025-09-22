@@ -1,0 +1,11 @@
+[package]
+name = "trustjectory"
+version = "0.1.0"
+edition = "2024"
+features = ["static-link"]
+
+[dependencies]
+env = "1.0.1"
+futures = "0.3.31"
+gamepad = "0.1.6"
+r2r = "0.9.5"
