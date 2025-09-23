@@ -1,13 +1,20 @@
 use futures::executor::block_on;
 use gamepad::*;
 use r2r::{Node, Publisher, QosProfile};
-use std::{sync::{Arc, Mutex}, time::Duration};
+use std::{f64, sync::{Arc, Mutex}, time::Duration};
 use r2r::trajectory_msgs::msg::JointTrajectoryPoint;
 
 const QOS_PROFILE: QosProfile = QosProfile::sensor_data().reliable();
-const JOYSTICK_SPEED_FACTOR: f64 = 1.;
 const GAMEPAD_SAMPLING_PERIOD: Duration = Duration::from_millis(10);
 const ROS_SAMPLING_PERIOD: Duration = Duration::from_millis(10);
+const JOYSTICK_SPEED_FACTOR: f64 = GAMEPAD_SAMPLING_PERIOD.as_secs_f64(); // targeting 1 rad/s
+const DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR: f64 = f64::consts::PI/180.0;
+const MAX_ANGLES : [f64; 4] = [
+    170.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
+    85.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
+    75.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
+    160.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR
+];
 
 async fn teach_pendant() {
     let mut gamepad_engine = GamepadEngine::new();
@@ -16,11 +23,11 @@ async fn teach_pendant() {
         r2r::Node::create(ctx, "teach_pendant", "").expect("Couldn't create the ros node")
     ));
     let node_clone = node.clone();
-    let mut middleware_counter: u32 = 0;
+    let mut middleware_heartbeat_counter: u32 = 0;
     std::thread::spawn(move || loop {
         node_clone.lock().unwrap().spin_once(Duration::ZERO);
-        middleware_counter += 1;
-        if middleware_counter % 1024 == 0 {
+        middleware_heartbeat_counter += 1;
+        if middleware_heartbeat_counter % 1024 == 0 {
             println!("Still running ROS middleware");
         }
         std::thread::sleep(ROS_SAMPLING_PERIOD);
@@ -33,7 +40,7 @@ async fn teach_pendant() {
         effort: vec![0.0; 4],
         time_from_start: r2r::builtin_interfaces::msg::Duration::default(),
     };
-    let mut loop_counter: u32 = 0;
+    let mut loop_heartbeat_counter: u32 = 0;
     println!("Teach pendant ready!");
     loop {
         gamepad_engine.update().expect("There was an error in updating the gamepad engine");
@@ -44,11 +51,12 @@ async fn teach_pendant() {
             desired_robot_state.positions[1] += left_joystick.1 as f64 * JOYSTICK_SPEED_FACTOR;
             desired_robot_state.positions[2] += right_joystick.0 as f64 * JOYSTICK_SPEED_FACTOR;
             desired_robot_state.positions[3] += right_joystick.1 as f64 * JOYSTICK_SPEED_FACTOR;
+            clip_desired_positions(&mut desired_robot_state.positions);
         }
         match publisher.publish(&desired_robot_state){
             Ok(_) => {
-                loop_counter += 1;
-                if loop_counter % 1024 == 0 {
+                loop_heartbeat_counter += 1;
+                if loop_heartbeat_counter % 1024 == 0 {
                     println!("Still publishing successfully");
                 }
             },
@@ -70,4 +78,15 @@ async fn initialize_publisher(node: Arc<Mutex<Node>>) -> Publisher<JointTrajecto
 }
 pub fn main() {
     block_on(teach_pendant());
+}
+
+fn clip_desired_positions(desired_positions: &mut Vec<f64>) {
+    for index in 0..MAX_ANGLES.len() {
+        let max_angle = MAX_ANGLES[index];
+        if desired_positions[index] < -max_angle {
+            desired_positions[index] = -max_angle;
+        }else if desired_positions[index] > max_angle {
+            desired_positions[index] = max_angle;
+        }
+    }
 }
