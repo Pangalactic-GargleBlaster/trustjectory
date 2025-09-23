@@ -1,10 +1,10 @@
-use futures::executor::block_on;
+use futures::{executor::block_on, StreamExt};
 use gamepad::*;
 use r2r::{Node, Publisher, QosProfile};
 use std::{f64, sync::{Arc, Mutex}, time::Duration};
 use r2r::trajectory_msgs::msg::JointTrajectoryPoint;
 
-const QOS_PROFILE: QosProfile = QosProfile::sensor_data().reliable();
+const QOS_PROFILE: QosProfile = QosProfile::sensor_data();
 const GAMEPAD_SAMPLING_PERIOD: Duration = Duration::from_millis(10);
 const ROS_SAMPLING_PERIOD: Duration = Duration::from_millis(10);
 const JOYSTICK_SPEED_FACTOR: f64 = GAMEPAD_SAMPLING_PERIOD.as_secs_f64(); // targeting 1 rad/s
@@ -13,7 +13,7 @@ const MAX_ANGLES : [f64; 4] = [
     170.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
     85.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
     75.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
-    160.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR
+    160.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
 ];
 
 async fn teach_pendant() {
@@ -40,6 +40,10 @@ async fn teach_pendant() {
         effort: vec![0.0; 4],
         time_from_start: r2r::builtin_interfaces::msg::Duration::default(),
     };
+    let mut subscription = node.lock().unwrap().subscribe::<JointTrajectoryPoint>("/robot_state", QOS_PROFILE).expect("Unable to subscribe to robot state topic");
+    println!("Registered a subscriber!");
+    desired_robot_state.positions[0..5].copy_from_slice(&subscription.next().await.expect("No initial position received").positions[0..4]);
+    println!("Initial positions: {:?}", desired_robot_state.positions);
     let mut loop_heartbeat_counter: u32 = 0;
     println!("Teach pendant ready!");
     loop {
@@ -52,6 +56,9 @@ async fn teach_pendant() {
             desired_robot_state.positions[2] += right_joystick.0 as f64 * JOYSTICK_SPEED_FACTOR;
             desired_robot_state.positions[3] += right_joystick.1 as f64 * JOYSTICK_SPEED_FACTOR;
             clip_desired_positions(&mut desired_robot_state.positions);
+            if gamepad.is_just_pressed(Button::South){
+                desired_robot_state.positions[4] = 1.0-desired_robot_state.positions[4];
+            }
         }
         match publisher.publish(&desired_robot_state){
             Ok(_) => {
