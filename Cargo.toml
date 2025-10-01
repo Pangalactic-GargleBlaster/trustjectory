@@ -2,7 +2,6 @@
 name = "trustjectory"
 version = "0.1.0"
 edition = "2024"
-features = ["static-link"]
 
 [dependencies]
 env = "1.0.1"

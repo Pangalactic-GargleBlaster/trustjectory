@@ -4,7 +4,7 @@ use r2r::{Node, Publisher, QosProfile};
 use std::{f64, sync::{Arc, Mutex}, time::Duration};
 use r2r::trajectory_msgs::msg::JointTrajectoryPoint;
 
-const QOS_PROFILE: QosProfile = QosProfile::sensor_data();
+const QOS_PROFILE: QosProfile = QosProfile::sensor_data().reliable();
 const GAMEPAD_SAMPLING_PERIOD: Duration = Duration::from_millis(10);
 const ROS_SAMPLING_PERIOD: Duration = Duration::from_millis(10);
 const JOYSTICK_SPEED_FACTOR: f64 = GAMEPAD_SAMPLING_PERIOD.as_secs_f64(); // targeting 1 rad/s
@@ -20,7 +20,7 @@ async fn teach_pendant() {
     let mut gamepad_engine = GamepadEngine::new();
     let ctx = r2r::Context::create().expect("Couldn't initialize ros");
     let node: Arc<Mutex<Node>> = Arc::new(Mutex::new(
-        r2r::Node::create(ctx, "teach_pendant", "").expect("Couldn't create the ros node")
+        r2r::Node::create(ctx, "teach_pendant", "trustjectory").expect("Couldn't create the ros node")
     ));
     let node_clone = node.clone();
     let mut middleware_heartbeat_counter: u32 = 0;
@@ -42,7 +42,7 @@ async fn teach_pendant() {
     };
     let mut subscription = node.lock().unwrap().subscribe::<JointTrajectoryPoint>("/robot_state", QOS_PROFILE).expect("Unable to subscribe to robot state topic");
     println!("Registered a subscriber!");
-    desired_robot_state.positions[0..5].copy_from_slice(&subscription.next().await.expect("No initial position received").positions[0..4]);
+    desired_robot_state.positions[0..5].copy_from_slice(&subscription.next().await.expect("No initial position received").positions[0..5]);
     println!("Initial positions: {:?}", desired_robot_state.positions);
     let mut loop_heartbeat_counter: u32 = 0;
     println!("Teach pendant ready!");
@@ -81,6 +81,7 @@ async fn initialize_publisher(node: Arc<Mutex<Node>>) -> Publisher<JointTrajecto
     while let Err(_) = publisher.wait_for_inter_process_subscribers().unwrap().await{
         println!("Failed to establish a connection to a subscriber. Trying again");
     }
+    println!("The publisher got a subscriber");
     publisher
 }
 pub fn main() {
