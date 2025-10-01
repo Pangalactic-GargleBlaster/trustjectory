@@ -1,0 +1,1 @@
+COPY /Y .pixi\envs\default\Library\bin\libclang-*.dll .pixi\envs\default\Library\bin\libclang.dll

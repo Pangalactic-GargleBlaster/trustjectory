@@ -1,0 +1,17 @@
+[project]
+name = "ros2"
+version = "1.0.0"
+channels = ["robostack-humble", "conda-forge"]
+platforms = ["win-64"]
+
+[dependencies]
+ros-humble-desktop = "*"
+rust = "*"
+rust-src = "*"
+libclang = "*"
+
+[activation]
+scripts = ['scripts\copy_libclang.bat']
+
+[activation.env]
+LIBCLANG_PATH = '.pixi\envs\default\Library\bin'
