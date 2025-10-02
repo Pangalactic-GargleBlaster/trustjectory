@@ -14,4 +14,4 @@ libclang = "*"
 scripts = ['scripts\copy_libclang.bat']
 
 [activation.env]
-LIBCLANG_PATH = '.pixi\envs\default\Library\bin'
+LIBCLANG_PATH = '$env:PIXI_PROJECT_ROOT\.pixi\envs\default\Library\bin'

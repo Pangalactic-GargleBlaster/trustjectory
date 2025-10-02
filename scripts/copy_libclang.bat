@@ -1,1 +1,1 @@
-COPY /Y .pixi\envs\default\Library\bin\libclang-*.dll .pixi\envs\default\Library\bin\libclang.dll
+COPY /Y .pixi\envs\default\Library\bin\libclang-13.dll .pixi\envs\default\Library\bin\libclang.dll

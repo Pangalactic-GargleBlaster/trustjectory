@@ -4,7 +4,7 @@ use r2r::{Node, Publisher, QosProfile};
 use std::{f64, sync::{Arc, Mutex}, time::Duration};
 use r2r::trajectory_msgs::msg::JointTrajectoryPoint;
 
-const QOS_PROFILE: QosProfile = QosProfile::sensor_data().reliable();
+const QOS_PROFILE: QosProfile = QosProfile::sensor_data().reliable().keep_last(1);
 const GAMEPAD_SAMPLING_PERIOD: Duration = Duration::from_millis(10);
 const ROS_SAMPLING_PERIOD: Duration = Duration::from_millis(10);
 const JOYSTICK_SPEED_FACTOR: f64 = GAMEPAD_SAMPLING_PERIOD.as_secs_f64(); // targeting 1 rad/s
