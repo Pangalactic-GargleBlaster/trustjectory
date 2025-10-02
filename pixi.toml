@@ -9,6 +9,7 @@ ros-humble-desktop = "*"
 rust = "*"
 rust-src = "*"
 libclang = "*"
+pip = "*"
 
 [activation]
 scripts = ['scripts\copy_libclang.bat']

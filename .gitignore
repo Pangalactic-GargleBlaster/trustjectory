@@ -1,1 +1,6 @@
 target/*
+pixi.lock
+simulink/+bus_conv_fcns
+simulink/slprj
+simulink/mock_robot.slxc
+pixi.lock
