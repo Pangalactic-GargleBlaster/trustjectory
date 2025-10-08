@@ -72,9 +72,7 @@ async fn teach_pendant() {
             }
             if gamepad.is_just_pressed(Button::West) {
                 let mut new_point: [f64;5] = [0.0;5];
-                new_point.copy_from_slice(&subscription.next().await
-                    .expect("Unable to read current position")
-                    .positions[0..5]);
+                new_point.copy_from_slice(&desired_robot_state.positions[0..5]);
                 println!("Adding point {new_point:?} to the trajectory");
                 current_trajectory.push(new_point);
             }
