@@ -1,6 +1,6 @@
 target/*
 pixi.lock
-simulink/
+simulink/*
 !simulink/mock_robot.slx
 !simulink/Robot.slx
 trajectories/*
