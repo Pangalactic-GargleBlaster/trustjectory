@@ -3,4 +3,6 @@ pixi.lock
 simulink/*
 !simulink/mock_robot.slx
 !simulink/Robot.slx
+!simulink/Debug.slx
 trajectories/*
+python/Quanser/__pycache__
