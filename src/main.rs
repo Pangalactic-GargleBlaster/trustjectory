@@ -19,18 +19,18 @@ const MAX_ANGLES : [f64; 4] = [
     75.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
     160.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
 ];
+// const MAX_VELOCITIES : [f64; 4] = [f64::consts::PI/2.0;4];
+const MAX_ACCELERATIONS : [f64; 4] = [f64::consts::PI/3.0;4];
 const BASIC_TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_secs(3);
+const TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_millis(5);
 const HOME_POSITION: [f64;5] = [0.0, 0.0, 0.0, 0.0, 0.0];
 const STARTING_DISTANCE_THRESHOLD: f64 = 3.0;
 
 type JointPositionsArray = [f64;5];
+type JointVelocitiesArray = [f64;4];
 
-async fn teach_pendant() {
+async fn teach_pendant(node: Arc<Mutex<Node>>) {
     let mut gamepad_engine = GamepadEngine::new();
-    let ctx = r2r::Context::create().expect("Couldn't initialize ros");
-    let node: Arc<Mutex<Node>> = Arc::new(Mutex::new(
-        r2r::Node::create(ctx, "teach_pendant", "trustjectory").expect("Couldn't create the ros node")
-    ));
     let node_clone = node.clone();
     let mut middleware_heartbeat_counter: u32 = 0;
     std::thread::spawn(move || loop {
@@ -98,6 +98,30 @@ async fn teach_pendant() {
     }
 }
 
+fn high_jerk_trajectory(duration: Duration, one_direction_interval: Duration) -> Vec<JointPositionsArray> {
+    let mut current_position: JointPositionsArray = HOME_POSITION;
+    let mut current_velocity: JointVelocitiesArray = [0.0;4];
+    let mut trajectory: Vec<JointPositionsArray> = vec![current_position];
+    let mut current_time = Duration::ZERO;
+    let mut sign = 1.0;
+    let mut last_change_of_sign = Duration::ZERO;
+    while current_time < duration {
+        let mut new_position: JointPositionsArray = HOME_POSITION;
+        for index in 0..current_velocity.len() {
+            new_position[index] = current_position[index] + current_velocity[index]*TRAJECTORY_INTER_POINT_DELAY.as_secs_f64();
+            current_velocity[index] += MAX_ACCELERATIONS[index]*sign*TRAJECTORY_INTER_POINT_DELAY.as_secs_f64();
+        }
+        current_position = new_position;
+        trajectory.push(new_position);
+        current_time += TRAJECTORY_INTER_POINT_DELAY;
+        if current_time - last_change_of_sign > one_direction_interval {
+            last_change_of_sign = current_time;
+            sign = -sign;
+        }
+    }
+    return trajectory;
+}
+
 fn execute_trajectory(trajectory: &Vec<JointPositionsArray>, publisher: &Publisher<JointTrajectoryPoint> ) {
     println!("Executing a saved trajectory");
     for joint_positions_array in trajectory {
@@ -137,7 +161,15 @@ async fn initialize_publisher(node: Arc<Mutex<Node>>) -> Publisher<JointTrajecto
     publisher
 }
 pub fn main() {
-    block_on(teach_pendant());
+    let ctx = r2r::Context::create().expect("Couldn't initialize ros");
+    let node = Arc::new(Mutex::new(r2r::Node::create(ctx, "teach_pendant", "trustjectory").expect("Couldn't create the ros node")));
+    let args: Vec<String> = std::env::args().collect();
+    if args.contains(&"jerk_test".to_string()) {
+        let publisher = block_on(initialize_publisher(node.clone()));
+        execute_trajectory(&high_jerk_trajectory(Duration::from_secs(10), Duration::from_secs(1)), &publisher);
+    }
+    block_on(teach_pendant(node));
+
 }
 
 fn clip_desired_positions(desired_positions: &mut Vec<f64>) {
