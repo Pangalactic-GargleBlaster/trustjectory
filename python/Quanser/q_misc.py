@@ -1,4 +1,5 @@
-from quanser.communications import Stream, StreamError, PollFlag, Timeout
+from quanser.communications import Stream, StreamError, PollFlag
+from quanser.common import Timeout
 import struct
 import numpy as np
 

@@ -11,16 +11,16 @@ use serde_json;
 const QOS_PROFILE: QosProfile = QosProfile::sensor_data().reliable().keep_last(1);
 const GAMEPAD_SAMPLING_PERIOD: Duration = Duration::from_millis(10);
 const ROS_SAMPLING_PERIOD: Duration = Duration::from_millis(10);
-const JOYSTICK_SPEED_FACTOR: f64 = GAMEPAD_SAMPLING_PERIOD.as_secs_f64(); // targeting 1 rad/s
+const JOYSTICK_SPEED_FACTOR: f64 = GAMEPAD_SAMPLING_PERIOD.as_secs_f64()/2.0; // targeting 0.5 rad/s
 const DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR: f64 = f64::consts::PI/180.0;
-const MAX_ANGLES : [f64; 4] = [
+const MAX_ANGLES: [f64; 4] = [
     170.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
     85.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
     75.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
     160.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
 ];
-// const MAX_VELOCITIES : [f64; 4] = [f64::consts::PI/2.0;4];
-const MAX_ACCELERATIONS : [f64; 4] = [f64::consts::PI/3.0;4];
+// const MAX_VELOCITIES: [f64; 4] = [f64::consts::PI/2.0;4];
+const MAX_ACCELERATIONS: [f64; 4] = [f64::consts::PI/3.0;4];
 const BASIC_TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_secs(3);
 const TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_millis(5);
 const HOME_POSITION: [f64;5] = [0.0, 0.0, 0.0, 0.0, 0.0];
@@ -63,9 +63,9 @@ async fn teach_pendant(node: Arc<Mutex<Node>>) {
             let left_joystick: (f32, f32) = gamepad.joystick(Joystick::Left);
             let right_joystick: (f32, f32) = gamepad.joystick(Joystick::Right);
             desired_robot_state.positions[0] += left_joystick.0 as f64 * JOYSTICK_SPEED_FACTOR;
-            desired_robot_state.positions[1] += left_joystick.1 as f64 * JOYSTICK_SPEED_FACTOR;
-            desired_robot_state.positions[2] += right_joystick.0 as f64 * JOYSTICK_SPEED_FACTOR;
-            desired_robot_state.positions[3] += right_joystick.1 as f64 * JOYSTICK_SPEED_FACTOR;
+            desired_robot_state.positions[1] -= left_joystick.1 as f64 * JOYSTICK_SPEED_FACTOR;
+            desired_robot_state.positions[2] -= right_joystick.1 as f64 * JOYSTICK_SPEED_FACTOR;
+            desired_robot_state.positions[3] -= right_joystick.0 as f64 * JOYSTICK_SPEED_FACTOR;
             clip_desired_positions(&mut desired_robot_state.positions);
             if gamepad.is_just_pressed(Button::South) {
                 desired_robot_state.positions[4] = 1.0-desired_robot_state.positions[4];
