@@ -19,7 +19,7 @@ const MAX_ANGLES: [f64; 4] = [
     75.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
     160.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
 ];
-// const MAX_VELOCITIES: [f64; 4] = [f64::consts::PI/2.0;4];
+const MAX_VELOCITIES: [f64; 4] = [f64::consts::PI/2.0;4];
 const MAX_ACCELERATIONS: [f64; 4] = [f64::consts::PI/3.0;4];
 const BASIC_TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_secs(3);
 const TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_millis(5);
@@ -31,16 +31,6 @@ type JointVelocitiesArray = [f64;4];
 
 async fn teach_pendant(node: Arc<Mutex<Node>>) {
     let mut gamepad_engine = GamepadEngine::new();
-    let node_clone = node.clone();
-    let mut middleware_heartbeat_counter: u32 = 0;
-    std::thread::spawn(move || loop {
-        node_clone.lock().unwrap().spin_once(Duration::ZERO);
-        middleware_heartbeat_counter += 1;
-        if middleware_heartbeat_counter % 1024 == 0 {
-            println!("Still running ROS middleware");
-        }
-        std::thread::sleep(ROS_SAMPLING_PERIOD);
-    });
     let mut publisher = initialize_publisher(node.clone()).await;
     let mut desired_robot_state = JointTrajectoryPoint{
         positions: HOME_POSITION.into(),
@@ -66,7 +56,9 @@ async fn teach_pendant(node: Arc<Mutex<Node>>) {
             desired_robot_state.positions[1] -= left_joystick.1 as f64 * JOYSTICK_SPEED_FACTOR;
             desired_robot_state.positions[2] -= right_joystick.1 as f64 * JOYSTICK_SPEED_FACTOR;
             desired_robot_state.positions[3] -= right_joystick.0 as f64 * JOYSTICK_SPEED_FACTOR;
-            clip_desired_positions(&mut desired_robot_state.positions);
+            for index in 0..desired_robot_state.positions.len() {
+                desired_robot_state.positions[index] = desired_robot_state.positions[index].clamp(-MAX_ANGLES[index], MAX_ANGLES[index])
+            }
             if gamepad.is_just_pressed(Button::South) {
                 desired_robot_state.positions[4] = 1.0-desired_robot_state.positions[4];
             }
@@ -80,7 +72,7 @@ async fn teach_pendant(node: Arc<Mutex<Node>>) {
                 write_trajectory_to_file(&current_trajectory, &("trajectory".to_string()+&trajectory_counter.to_string()));
                 trajectory_counter += 1;
                 current_trajectory.reverse();
-                execute_trajectory(&current_trajectory, &publisher);
+                execute_trajectory(&basic_trajectory(&current_trajectory), &publisher);
                 desired_robot_state.positions = HOME_POSITION.into();
                 current_trajectory = vec![HOME_POSITION.into()];
             }
@@ -108,8 +100,8 @@ fn high_jerk_trajectory(duration: Duration, one_direction_interval: Duration) ->
     while current_time < duration {
         let mut new_position: JointPositionsArray = HOME_POSITION;
         for index in 0..current_velocity.len() {
-            new_position[index] = current_position[index] + current_velocity[index]*TRAJECTORY_INTER_POINT_DELAY.as_secs_f64();
-            current_velocity[index] += MAX_ACCELERATIONS[index]*sign*TRAJECTORY_INTER_POINT_DELAY.as_secs_f64();
+            new_position[index] = (current_position[index] + current_velocity[index]*TRAJECTORY_INTER_POINT_DELAY.as_secs_f64()).clamp(-MAX_ANGLES[index], MAX_ANGLES[index]);
+            current_velocity[index] += (MAX_ACCELERATIONS[index]*sign*TRAJECTORY_INTER_POINT_DELAY.as_secs_f64()).clamp(-MAX_VELOCITIES[index], MAX_VELOCITIES[index]);
         }
         current_position = new_position;
         trajectory.push(new_position);
@@ -122,8 +114,25 @@ fn high_jerk_trajectory(duration: Duration, one_direction_interval: Duration) ->
     return trajectory;
 }
 
+fn basic_trajectory(points: &Vec<JointPositionsArray>) -> Vec<JointPositionsArray> {
+    let mut current_time = Duration::ZERO;
+    let mut current_point_index = 0;
+    let mut current_point_start_time = Duration::ZERO;
+    let mut trajectory: Vec<JointPositionsArray> = vec![];
+    while current_time < BASIC_TRAJECTORY_INTER_POINT_DELAY*points.len() as u32 {
+        let current_point: JointPositionsArray = points[current_point_index];
+        trajectory.push(current_point);
+        current_time += TRAJECTORY_INTER_POINT_DELAY;
+        if current_time - current_point_start_time > BASIC_TRAJECTORY_INTER_POINT_DELAY {
+            current_point_index += 1;
+            current_point_start_time = current_time;
+        }
+    }
+    return trajectory;
+}
+
 fn execute_trajectory(trajectory: &Vec<JointPositionsArray>, publisher: &Publisher<JointTrajectoryPoint> ) {
-    println!("Executing a saved trajectory");
+    println!("Executing a saved trajectory with {} points", trajectory.len());
     for joint_positions_array in trajectory {
         match publisher.publish(&JointTrajectoryPoint{
             positions: joint_positions_array.to_vec(),
@@ -138,7 +147,7 @@ fn execute_trajectory(trajectory: &Vec<JointPositionsArray>, publisher: &Publish
                 return;
             },
         }
-        std::thread::sleep(BASIC_TRAJECTORY_INTER_POINT_DELAY);
+        std::thread::sleep(TRAJECTORY_INTER_POINT_DELAY);
     }
 }
 
@@ -163,6 +172,16 @@ async fn initialize_publisher(node: Arc<Mutex<Node>>) -> Publisher<JointTrajecto
 pub fn main() {
     let ctx = r2r::Context::create().expect("Couldn't initialize ros");
     let node = Arc::new(Mutex::new(r2r::Node::create(ctx, "teach_pendant", "trustjectory").expect("Couldn't create the ros node")));
+    let node_clone = node.clone();
+    let mut middleware_heartbeat_counter: u32 = 0;
+    std::thread::spawn(move || loop {
+        node_clone.lock().unwrap().spin_once(Duration::ZERO);
+        middleware_heartbeat_counter += 1;
+        if middleware_heartbeat_counter % 1024 == 0 {
+            println!("Still running ROS middleware");
+        }
+        std::thread::sleep(ROS_SAMPLING_PERIOD);
+    });
     let args: Vec<String> = std::env::args().collect();
     if args.contains(&"jerk_test".to_string()) {
         let publisher = block_on(initialize_publisher(node.clone()));
@@ -170,17 +189,6 @@ pub fn main() {
     }
     block_on(teach_pendant(node));
 
-}
-
-fn clip_desired_positions(desired_positions: &mut Vec<f64>) {
-    for index in 0..MAX_ANGLES.len() {
-        let max_angle = MAX_ANGLES[index];
-        if desired_positions[index] < -max_angle {
-            desired_positions[index] = -max_angle;
-        }else if desired_positions[index] > max_angle {
-            desired_positions[index] = max_angle;
-        }
-    }
 }
 
 fn distance_between_positions(position1: &Vec<f64>, position2: &Vec<f64>) -> f64 {
