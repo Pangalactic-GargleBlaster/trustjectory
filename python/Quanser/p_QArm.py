@@ -5,7 +5,7 @@ try:
     from quanser.hardware import HIL, HILError, PWMMode, MAX_STRING_LENGTH
     quanser_api_missing = False
     print("Found the QArm software")
-finally:
+except ModuleNotFoundError:
     pass
 if quanser_api_missing:
     print("Mocking the QArm")
@@ -13,8 +13,9 @@ if quanser_api_missing:
         def __init__(self):
             self.measJointPosition = np.array([0,0,0,0,0],dtype=np.float64)
         def read_write_std(self, phiCMD=np.array([0,0,0,0,0],dtype=np.float64), grpCMD=np.array([0],dtype=np.float64), baseLED=None):
-            phiCMD[4] = grpCMD
-            self.measJointPosition = phiCMD
+            self.measJointPosition = np.concatenate((phiCMD, grpCMD))
+        def read_std(self):
+            pass
 else:
     from .q_misc import Utilities
     saturate = Utilities.saturate

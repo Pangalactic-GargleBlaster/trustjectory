@@ -21,16 +21,20 @@ node = Node("QArm")
 qos_profile = QoSProfile(**{
     'reliability': QoSReliabilityPolicy.RELIABLE,
     'durability': QoSDurabilityPolicy.VOLATILE,
-    'depth': 1,
+    'depth': 5,
 })
 publisher = node.create_publisher(JointTrajectoryPoint, '/robot_state', qos_profile)
 print("Created the publisher")
+global count
+count = 0
 def publish_arm_state():
+    global count
     arm.read_std()
     ros_message = JointTrajectoryPoint(**{
         'positions': arm.measJointPosition,
     })
     publisher.publish(ros_message)
+    count += 1
 node.create_timer(0.005, publish_arm_state)
 node.create_subscription(JointTrajectoryPoint, '/robot_commands', send_command_to_arm, qos_profile)
 print("Created the subscriber")
