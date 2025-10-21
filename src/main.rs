@@ -1,4 +1,4 @@
-use futures::{executor::{block_on, LocalPool}, stream::StreamExt, task::LocalSpawnExt, Stream};
+use futures::{executor::{block_on, LocalPool}, stream::StreamExt, task::{LocalSpawnExt, SpawnExt}, Stream};
 use gamepad::*;
 use r2r::{Publisher, QosProfile};
 use std::{f64, time::{Duration, Instant}};
@@ -7,7 +7,7 @@ mod trajectories;
 use crate::trajectories::{equally_spaced_trajectory, high_jerk_trajectory, write_position_list_to_file, JointPosition, JointPositionExt, Trajectory, TrajectoryExt, ARM_DEGREES_OF_FREEDOM, HOME_POSITION, MAX_ANGLES, MIN_ANGLES};
 
 const QOS_PROFILE: QosProfile = QosProfile::sensor_data().reliable().keep_last(1);
-const ROS_SAMPLING_PERIOD: Duration = Duration::from_millis(1);
+const ROS_SAMPLING_PERIOD: Duration = Duration::from_millis(16);
 const STARTING_DISTANCE_THRESHOLD: f64 = 3.0;
 
 pub fn main() {
@@ -15,13 +15,34 @@ pub fn main() {
     let mut node = r2r::Node::create(ctx, "teach_pendant", "trustjectory").expect("Couldn't create the ros node");
     let mut subscription = node.subscribe::<JointTrajectoryPoint>("/robot_state", QOS_PROFILE).expect("Failed to subscribe to robot state topic");
     let publisher: Publisher<JointTrajectoryPoint> = node.create_publisher::<JointTrajectoryPoint>("/robot_commands", QOS_PROFILE).expect("Failed to create a publisher for the robot commands topic");
-    println!("Created publisher and subscriber");
 
+    if std::env::args().collect::<Vec<String>>().contains(&"publish_test".to_string()) {
+        let publisher: Publisher<JointTrajectoryPoint> = node.create_publisher::<JointTrajectoryPoint>("/robot_commands", QOS_PROFILE).expect("Failed to create a publisher for the robot commands topic");
+        let mut count = 0;
+        loop {
+            publisher.send_command_to_qarm([count as f64, 0.0,0.0,0.0,0.0]);
+            count += 1;
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    // if std::env::args().collect::<Vec<String>>().contains(&"subscription_test".to_string()) {
+    //     let mut subscription = node.subscribe::<JointTrajectoryPoint>("/robot_state", QOS_PROFILE).expect("Failed to subscribe to robot state topic");
+    //     std::thread::spawn(move || node.spin_once(Duration::from_millis(1)));
+    //     let mut last_message_time = Instant::now();
+    //     block_on(async { loop {
+    //         if let Some(message) = subscription.next().await {
+    //             println!("delta t: {}, index: {}", last_message_time.elapsed().as_secs_f64(), message.positions[0]);
+    //             last_message_time = Instant::now();
+    //         }
+    //     }});
+    // }
+    println!("Created publisher and subscriber");
     let mut pool = LocalPool::new();
     let spawner = pool.spawner();
     spawner.spawn_local(async move {
-        publisher.wait_for_inter_process_subscribers().unwrap().await.unwrap();
-        if std::env::args().find(|s| s == "jerk_test").is_some() {
+        publisher.wait_for_inter_process_subscribers().expect("error before awaiting").await.expect("error in waiting for subscribers");
+        if std::env::args().collect::<Vec<String>>().contains(&"jerk_test".to_string()) {
             println!("Running high jerk test");
             execute_trajectory(&high_jerk_trajectory(Duration::from_secs(10)), &publisher, &mut subscription).await
         }
@@ -48,6 +69,7 @@ async fn teach_pendant(publisher: Publisher<JointTrajectoryPoint>, mut subscript
     let mut trajectory_counter: u32 = 1;
     let mut current_position_list: Vec<JointPosition> = vec![HOME_POSITION.into()];
     let mut last_iteration = Instant::now();
+    println!("Starting teach pendant loop");
     loop {
         let robot_state: JointPosition = get_robot_state(&mut subscription).await;
         gamepad_engine.update().expect("There was an error in updating the gamepad engine");
