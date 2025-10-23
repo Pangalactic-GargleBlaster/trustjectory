@@ -19,7 +19,7 @@ def send_command_to_arm(joint_trajectory_point: JointTrajectoryPoint):
     now = time.time()
     delta_t = now - last_message_time
     last_message_time = now
-    print(f"delta_t: {delta_t}, count: {joint_trajectory_point.positions[0]}")
+    print(f"delta_t: {delta_t}")
 
     phiCMD[0:4] = joint_trajectory_point.positions[0:4]
     gripCMD = np.array([joint_trajectory_point.positions[4]], dtype=np.float64)
