@@ -1,5 +1,6 @@
 import numpy as np
 import time
+import math
 quanser_api_missing = True
 try:
     from quanser.hardware import HIL, HILError, PWMMode, MAX_STRING_LENGTH
@@ -12,8 +13,12 @@ if quanser_api_missing:
     class QArm:
         def __init__(self):
             self.measJointPosition = np.array([0,0,0,0,0],dtype=np.float64)
+            self.last_message_time = time.time()
         def read_write_std(self, phiCMD=np.array([0,0,0,0,0],dtype=np.float64), grpCMD=np.array([0],dtype=np.float64), baseLED=None):
-            self.measJointPosition = np.concatenate((phiCMD, grpCMD))
+            command = np.concatenate((phiCMD, grpCMD))
+            now = time.time()
+            self.measJointPosition = self.measJointPosition + (command - self.measJointPosition) * (1-math.exp(-(now-self.last_message_time)))
+            self.last_message_time = now
         def read_std(self):
             pass
 else:

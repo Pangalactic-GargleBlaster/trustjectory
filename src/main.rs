@@ -15,36 +15,24 @@ pub fn main() {
     let mut node = r2r::Node::create(ctx, "teach_pendant", "trustjectory").expect("Couldn't create the ros node");
     let mut subscription = node.subscribe::<JointTrajectoryPoint>("/robot_state", QOS_PROFILE).expect("Failed to subscribe to robot state topic");
     let publisher: Publisher<JointTrajectoryPoint> = node.create_publisher::<JointTrajectoryPoint>("/robot_commands", QOS_PROFILE).expect("Failed to create a publisher for the robot commands topic");
+    println!("Created publisher and subscriber");
 
     if std::env::args().collect::<Vec<String>>().contains(&"publish_test".to_string()) {
-        let publisher: Publisher<JointTrajectoryPoint> = node.create_publisher::<JointTrajectoryPoint>("/robot_commands", QOS_PROFILE).expect("Failed to create a publisher for the robot commands topic");
         let mut count = 0;
         loop {
             publisher.send_command_to_qarm([count as f64, 0.0,0.0,0.0,0.0]);
             count += 1;
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(ROS_SAMPLING_PERIOD);
         }
     }
 
-    // if std::env::args().collect::<Vec<String>>().contains(&"subscription_test".to_string()) {
-    //     let mut subscription = node.subscribe::<JointTrajectoryPoint>("/robot_state", QOS_PROFILE).expect("Failed to subscribe to robot state topic");
-    //     std::thread::spawn(move || node.spin_once(Duration::from_millis(1)));
-    //     let mut last_message_time = Instant::now();
-    //     block_on(async { loop {
-    //         if let Some(message) = subscription.next().await {
-    //             println!("delta t: {}, index: {}", last_message_time.elapsed().as_secs_f64(), message.positions[0]);
-    //             last_message_time = Instant::now();
-    //         }
-    //     }});
-    // }
-    println!("Created publisher and subscriber");
     let mut pool = LocalPool::new();
     let spawner = pool.spawner();
     spawner.spawn_local(async move {
         publisher.wait_for_inter_process_subscribers().expect("error before awaiting").await.expect("error in waiting for subscribers");
         if std::env::args().collect::<Vec<String>>().contains(&"jerk_test".to_string()) {
             println!("Running high jerk test");
-            execute_trajectory(&high_jerk_trajectory(Duration::from_secs(10)), &publisher, &mut subscription).await
+            execute_trajectory(&high_jerk_trajectory(Duration::from_secs(60)), &publisher, &mut subscription).await
         }
         println!("Teach pendant ready!");
         teach_pendant(publisher, subscription).await
@@ -69,7 +57,7 @@ async fn teach_pendant(publisher: Publisher<JointTrajectoryPoint>, mut subscript
     let mut trajectory_counter: u32 = 1;
     let mut current_position_list: Vec<JointPosition> = vec![HOME_POSITION.into()];
     let mut last_iteration = Instant::now();
-    println!("Starting teach pendant loop");
+    let mut robot_command: JointPosition = HOME_POSITION;
     loop {
         let robot_state: JointPosition = get_robot_state(&mut subscription).await;
         gamepad_engine.update().expect("There was an error in updating the gamepad engine");
@@ -78,15 +66,17 @@ async fn teach_pendant(publisher: Publisher<JointTrajectoryPoint>, mut subscript
             let right_joystick: (f32, f32) = gamepad.joystick(Joystick::Right);
             let left_back_button = gamepad.is_pressed(Button::LeftShoulder);
             let right_back_button = gamepad.is_pressed(Button::RightShoulder);
-            println!("delta t: {}, index: {}", last_iteration.elapsed().as_secs_f64(), robot_state[0]);
             let speed_factor = last_iteration.elapsed().as_secs_f64()/2.0; // target 0.5 rad/s
-            publisher.send_command_to_qarm([
-                (robot_state[0] + left_joystick.0 as f64 * speed_factor).clamp(MIN_ANGLES[0], MAX_ANGLES[0]),
-                (robot_state[1] - left_joystick.1 as f64 * speed_factor).clamp(MIN_ANGLES[1], MAX_ANGLES[1]),
-                (robot_state[2] - right_joystick.1 as f64 * speed_factor).clamp(MIN_ANGLES[2], MAX_ANGLES[2]),
-                (robot_state[3] - right_joystick.0 as f64 * speed_factor).clamp(MIN_ANGLES[3], MAX_ANGLES[3]),
-                (robot_state[4] + (right_back_button as u8 as f64 - left_back_button as u8 as f64) * speed_factor).clamp(MIN_ANGLES[4], MAX_ANGLES[4]),
-            ]);
+            if gamepad_is_idle(left_joystick, right_joystick, left_back_button, right_back_button) {
+                robot_command = robot_state;
+            } else {
+                robot_command[0] = (robot_command[0] + left_joystick.0 as f64 * speed_factor).clamp(MIN_ANGLES[0], MAX_ANGLES[0]);
+                robot_command[1] = (robot_command[1] - left_joystick.1 as f64 * speed_factor).clamp(MIN_ANGLES[1], MAX_ANGLES[1]);
+                robot_command[2] = (robot_command[2] - right_joystick.1 as f64 * speed_factor).clamp(MIN_ANGLES[2], MAX_ANGLES[2]);
+                robot_command[3] = (robot_command[3] - right_joystick.0 as f64 * speed_factor).clamp(MIN_ANGLES[3], MAX_ANGLES[3]);
+                robot_command[4] = (robot_command[4] + (right_back_button as u8 as f64 - left_back_button as u8 as f64) * speed_factor).clamp(MIN_ANGLES[4], MAX_ANGLES[4]);
+            }
+            publisher.send_command_to_qarm(robot_command);
             if gamepad.is_just_pressed(Button::West) {
                 println!("Adding point {robot_state:?} to the trajectory");
                 current_position_list.push(robot_state);
@@ -94,8 +84,7 @@ async fn teach_pendant(publisher: Publisher<JointTrajectoryPoint>, mut subscript
             if gamepad.is_just_pressed(Button::East) {
                 write_position_list_to_file(&current_position_list, &("trajectory".to_string()+&trajectory_counter.to_string()));
                 trajectory_counter += 1;
-                current_position_list.reverse();
-                execute_trajectory(&equally_spaced_trajectory(&current_position_list), &publisher, &mut subscription).await;
+                execute_trajectory(&equally_spaced_trajectory(&current_position_list).invert(), &publisher, &mut subscription).await;
                 current_position_list = vec![HOME_POSITION];
             }
 
@@ -106,6 +95,10 @@ async fn teach_pendant(publisher: Publisher<JointTrajectoryPoint>, mut subscript
         }
         last_iteration = Instant::now();
     }
+}
+
+fn gamepad_is_idle(left_joystick: (f32, f32), right_joystick: (f32, f32), left_back_button: bool, right_back_button: bool) -> bool {
+    return left_joystick == (0.0,0.0) && right_joystick == (0.0,0.0) && left_back_button == false && right_back_button == false;
 }
 
 async fn execute_trajectory(trajectory: &Trajectory, publisher: &Publisher<JointTrajectoryPoint>, subscription: &mut (impl Stream<Item = JointTrajectoryPoint> + Unpin)) {

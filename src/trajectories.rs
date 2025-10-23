@@ -1,6 +1,8 @@
 use std::{f64, fs::File, path::Path, time::Duration};
 use std::io::Write;
 
+use nalgebra::{ArrayStorage, DMatrix, DVector, Matrix, SMatrix, SVector, VecStorage};
+
 
 pub const ARM_DEGREES_OF_FREEDOM: usize = 5;
 const DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR: f64 = f64::consts::PI/180.0;
@@ -57,11 +59,12 @@ impl TrajectoryExt for Trajectory{
         while ending_point_index - starting_point_index > 1 {
             let midpoint_index = (starting_point_index + ending_point_index)/2;
             if self[midpoint_index].time_from_start < time_from_start {
-                ending_point_index = midpoint_index;
-            } else {
                 starting_point_index = midpoint_index;
+            } else {
+                ending_point_index = midpoint_index;
             }
         }
+        println!("segment index: {starting_point_index}");
         return starting_point_index;
     }
 }
@@ -134,4 +137,48 @@ pub fn write_position_list_to_file(trajectory: &Vec<JointPosition>, file_name: &
     let json_string = serde_json::to_string_pretty(trajectory).expect("Failed to serialize a trajectory");
     let mut file = File::create(Path::new(&("trajectories/".to_string()+file_name))).expect("Failed to create the trajectory file");
     _ = file.write_all(json_string.as_bytes());
+}
+
+type Cubic = [f64;4];
+type Matrix14 = SMatrix<f64, 14, 14>;
+type Vector14 = SVector<f64, 14>;
+/// The cubics that this function returns all start at t=0 at the knots.
+/// The first element is the constant coefficient and the last is the cubic coefficient.
+fn c_q_q_c_kernel(durations: [Duration;4]) -> [Cubic;4] {
+    let mut matrix: Matrix14 = Matrix14::zeros();
+    let mut vector: Vector14 = Vector14::zeros();
+    let delta_ts: [f64;4] = durations.map(|duration| duration.as_secs_f64());
+    let delta_ts_squared: [f64;4] = durations.map(|duration| duration.as_secs_f64().powi(2));
+    let delta_ts_cubed: [f64;4] = durations.map(|duration| duration.as_secs_f64().powi(3));
+    let f0_offset = 0;
+    let f1_offset = 4;
+    let f2_offset = 7;
+    let f3_offset = 10;
+    // f0(0) = 0
+    matrix[(0,f0_offset)] = 1.0;
+    // f0'(0) = 0
+    matrix[(1,f0_offset+1)] = 1.0;
+    // f0(end) = 0
+    matrix[(2,f0_offset)] = 1.0;
+    matrix[(2,f0_offset+1)] = delta_ts[0];
+    matrix[(2,f0_offset)] = delta_ts_squared[0];
+    matrix[(2,f0_offset)] = delta_ts_cubed[0];
+    // f1(0) = 0
+    // f1'(0) = f0'(end) <==> f1'(0) - f0'(end) = 0
+    // f1(end) = 1
+    // f1'(end) = 0
+    // f2(0) = 1
+    // f2'(0) = 0
+    // f2(end) = 0
+    // f3(0) = 0
+    // f3'(0) = f2'(end) <==> f3'(0) - f2'(end) = 0
+    // f3(end) = 0
+    // f3'(end) = 0
+    let coefficients: Vector14 = matrix.lu().solve(&vector).expect("unable to solve the system of equations");
+    return [
+        [coefficients[0], coefficients[1], coefficients[2], coefficients[3]],
+        [coefficients[4], coefficients[5], coefficients[6], 0.0],
+        [coefficients[7], coefficients[8], coefficients[9], 0.0],
+        [coefficients[10], coefficients[11], coefficients[12], coefficients[13]],
+    ];
 }
