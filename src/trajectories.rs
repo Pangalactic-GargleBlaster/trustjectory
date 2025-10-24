@@ -26,23 +26,25 @@ const BASIC_TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_secs(3);
 
 pub type JointPosition = [f64;ARM_DEGREES_OF_FREEDOM];
 pub const HOME_POSITION:JointPosition = [0.0, 0.0, 0.0, 0.0, 0.5];
+#[derive(Debug)]
 pub struct TrajectoryPoint {
     pub joint_position: JointPosition,
     pub time_from_start: Duration,
 }
 pub type Trajectory = Vec<TrajectoryPoint>;
 pub trait TrajectoryExt {
-    fn invert(&self) -> Self;
+    fn inverted(&self) -> Self;
     fn segment_index(&self, time_from_start: Duration) -> usize;
 }
 impl TrajectoryExt for Trajectory{
-    fn invert(&self) -> Self {
+    fn inverted(&self) -> Self {
         match self.len() {
             0 => return Trajectory::new(),
             length => {
                 let total_duration = self[length-1].time_from_start;
+                println!("total duration: {}", total_duration.as_secs_f64());
                 let mut inverted_trajectory = Trajectory::new();
-                for trajectory_point in self {
+                for trajectory_point in self.iter().rev() {
                     inverted_trajectory.push(TrajectoryPoint{
                         joint_position: trajectory_point.joint_position,
                         time_from_start: total_duration - trajectory_point.time_from_start

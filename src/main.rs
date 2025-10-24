@@ -6,7 +6,7 @@ use r2r::trajectory_msgs::msg::JointTrajectoryPoint;
 mod trajectories;
 use crate::trajectories::{equally_spaced_trajectory, high_jerk_trajectory, write_position_list_to_file, JointPosition, Trajectory, TrajectoryExt, TrajectoryPoint, HOME_POSITION, MAX_ANGLES, MIN_ANGLES};
 
-const QOS_PROFILE: QosProfile = QosProfile::sensor_data().reliable().keep_last(1);
+const QOS_PROFILE: QosProfile = QosProfile::sensor_data().reliable();
 const ROS_SAMPLING_PERIOD: Duration = Duration::from_millis(16);
 
 pub fn main() {
@@ -67,8 +67,13 @@ async fn teach_pendant(publisher: Publisher<JointTrajectory>) {
             if gamepad.is_just_pressed(Button::East) {
                 write_position_list_to_file(&current_position_list, &("trajectory".to_string()+&trajectory_counter.to_string()));
                 trajectory_counter += 1;
-                publisher.send_trajectory_to_qarm(&equally_spaced_trajectory(&current_position_list).invert());
+                let return_home_trajectory = equally_spaced_trajectory(&current_position_list).inverted();
+                publisher.send_trajectory_to_qarm(&return_home_trajectory);
+                let duration = return_home_trajectory.last().unwrap().time_from_start;
+                println!("Returning home in {} seconds", duration.as_secs_f64());
+                std::thread::sleep(duration);
                 current_position_list = vec![HOME_POSITION];
+                robot_command = HOME_POSITION;
             }
 
             loop_heartbeat_counter += 1;
@@ -88,14 +93,14 @@ trait MoveQarm {
 impl MoveQarm for Publisher<JointTrajectory> {
     fn send_trajectory_to_qarm(&self, trajectory: &Trajectory) {
         let mut ros_trajectory: Vec<JointTrajectoryPoint> = Vec::with_capacity(trajectory.len());
-        for (index, trajectory_point) in trajectory.iter().enumerate() {
-            ros_trajectory[index] = JointTrajectoryPoint {
+        for trajectory_point in trajectory {
+            ros_trajectory.push(JointTrajectoryPoint {
                 positions: trajectory_point.joint_position.to_vec(),
                 velocities: vec![],
                 accelerations: vec![],
                 effort: vec![],
                 time_from_start: std_to_ros_duration(trajectory_point.time_from_start)
-            }
+            });
         }
         self.publish(&JointTrajectory{
             points: ros_trajectory,
@@ -106,8 +111,9 @@ impl MoveQarm for Publisher<JointTrajectory> {
     
     fn send_position_to_qarm(&self, position: &JointPosition) {
         let mut trajectory: Trajectory = Vec::with_capacity(2);
-        trajectory[0] = TrajectoryPoint{joint_position: position.clone(), time_from_start: Duration::ZERO};
-        trajectory[1] = TrajectoryPoint{joint_position: position.clone(), time_from_start: Duration::ZERO};
+        for _ in 0..2{
+            trajectory.push(TrajectoryPoint{joint_position: position.clone(), time_from_start: Duration::ZERO});
+        }
         self.send_trajectory_to_qarm(&trajectory);
     }
 }
