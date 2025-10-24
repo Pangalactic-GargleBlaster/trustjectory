@@ -1,29 +1,23 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
-from trajectory_msgs.msg import JointTrajectoryPoint
+from trajectory_msgs.msg import JointTrajectoryPoint, JointTrajectory
+from builtin_interfaces.msg import Duration
 import numpy as np 
 from Quanser.p_QArm import QArm
 import time
 
 arm = QArm()
-phiCMD = np.array([0,0,0,0],dtype=np.float64)
-gripCMD = np.array([0],dtype=np.float64)
-ledCMD = np.array([0,1,0],dtype=np.float64)
-arm.read_write_std(phiCMD=phiCMD, grpCMD=gripCMD, baseLED=ledCMD) # initialize at home position, green LED
-ledCMD = np.array([0,0,1],dtype=np.float64) # from the first command onwards keep LED blue
-global last_message_time
-last_message_time = time.time()
-def send_command_to_arm(joint_trajectory_point: JointTrajectoryPoint):
-    global last_message_time
-    now = time.time()
-    delta_t = now - last_message_time
-    last_message_time = now
-    print(f"delta_t: {delta_t}")
-
-    phiCMD[0:4] = joint_trajectory_point.positions[0:4]
-    gripCMD = np.array([joint_trajectory_point.positions[4]], dtype=np.float64)
-    arm.read_write_std(phiCMD=phiCMD, grpCMD=gripCMD, baseLED=ledCMD)
+home_pose = np.array([0,0,0,0,0.5])
+armLED = np.array([0,1,0], dtype=np.float64) # initialize at home position, green LED
+def send_command_to_arm(joint_position: np.array):
+    arm.read_write_std(
+        phiCMD=joint_position[0:4],
+        grpCMD=joint_position[4],
+        baseLED=armLED
+    )
+send_command_to_arm(home_pose)
+armLED = np.array([0,0,1],dtype=np.float64) # from the first command onwards keep LED blue
 
 rclpy.init()
 node = Node("QArm")
@@ -38,9 +32,29 @@ def publish_arm_state():
     arm.read_std()
     ros_message = JointTrajectoryPoint(**{
         'positions': arm.measJointPosition,
-    })
+    }).time_from_start
     publisher.publish(ros_message)
 node.create_timer(0.016, publish_arm_state)
-node.create_subscription(JointTrajectoryPoint, '/robot_commands', send_command_to_arm, qos_profile)
+
+def duration_in_seconds(ros_duration: Duration) -> float:
+    return ros_duration.sec + ros_duration.nanosec/1000000000
+
+def run_trajectory(joint_trajectory: JointTrajectory):
+    trajectory_length = joint_trajectory.points.__len__()
+    times_array = np.zeros(trajectory_length)
+    positions_array = np.zeros(trajectory_length)
+    for index, point in joint_trajectory.points:
+        times_array[index] = duration_in_seconds(point.time_from_start)
+        positions_array[index] = point.positions
+    trajectory_duration = times_array[-1]
+    print(f"Running trajectory with {trajectory_length} points. It will take {trajectory_duration}s.")
+    start_time = time.time()
+    while (time_from_start := time.time() - start_time) < trajectory_duration:
+        send_command_to_arm(np.interp(time_from_start, times_array, positions_array))
+        time.sleep(0.016)
+    send_command_to_arm(positions_array[-1])
+    print("Trajectory complete.")
+
+node.create_subscription(JointTrajectory, '/robot_commands', run_trajectory, qos_profile)
 print("Created the subscriber")
 rclpy.spin(node)

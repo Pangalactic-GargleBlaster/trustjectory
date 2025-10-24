@@ -17,5 +17,8 @@ def log_stats(message: JointTrajectoryPoint):
     global last_message_time
     print(f"Delay: {now - last_message_time}, index: {message.positions[0]}")
     last_message_time = now
-node.create_subscription(JointTrajectoryPoint, '/robot_commands', log_stats, qos_profile)
+    for i in range(1000000000):
+        if i%100000000 == 0:
+            print(f"tick {i//100000000}")
+node.create_subscription(JointTrajectoryPoint, '/robot_state', log_stats, qos_profile)
 rclpy.spin(node)
