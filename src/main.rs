@@ -1,10 +1,10 @@
 use futures::{executor::{LocalPool}, task::{LocalSpawnExt}};
 use gamepad::*;
-use r2r::{Publisher, QosProfile};
-use std::{f64, time::{Duration, Instant}};
+use r2r::{std_msgs::msg::Header, trajectory_msgs::msg::JointTrajectory, Publisher, QosProfile};
+use std::{f64, time::{Duration, Instant}, vec};
 use r2r::trajectory_msgs::msg::JointTrajectoryPoint;
 mod trajectories;
-use crate::trajectories::{equally_spaced_trajectory, high_jerk_trajectory, write_position_list_to_file, JointPosition, Trajectory, TrajectoryExt, HOME_POSITION, MAX_ANGLES, MIN_ANGLES};
+use crate::trajectories::{equally_spaced_trajectory, high_jerk_trajectory, write_position_list_to_file, JointPosition, Trajectory, TrajectoryExt, TrajectoryPoint, HOME_POSITION, MAX_ANGLES, MIN_ANGLES};
 
 const QOS_PROFILE: QosProfile = QosProfile::sensor_data().reliable().keep_last(1);
 const ROS_SAMPLING_PERIOD: Duration = Duration::from_millis(16);
@@ -12,7 +12,7 @@ const ROS_SAMPLING_PERIOD: Duration = Duration::from_millis(16);
 pub fn main() {
     let ctx = r2r::Context::create().expect("Couldn't initialize ros");
     let mut node = r2r::Node::create(ctx, "teach_pendant", "trustjectory").expect("Couldn't create the ros node");
-    let publisher: Publisher<JointTrajectoryPoint> = node.create_publisher::<JointTrajectoryPoint>("/robot_commands", QOS_PROFILE).expect("Failed to create a publisher for the robot commands topic");
+    let publisher: Publisher<JointTrajectory> = node.create_publisher::<JointTrajectory>("/robot_commands", QOS_PROFILE).expect("Failed to create a publisher for the robot commands topic");
     println!("Created publisher and subscriber");
 
     let mut pool = LocalPool::new();
@@ -21,7 +21,7 @@ pub fn main() {
         publisher.wait_for_inter_process_subscribers().expect("error before awaiting").await.expect("error in waiting for subscribers");
         if std::env::args().collect::<Vec<String>>().contains(&"jerk_test".to_string()) {
             println!("Running high jerk test");
-            execute_trajectory(&high_jerk_trajectory(Duration::from_secs(60)), &publisher).await
+            publisher.send_trajectory_to_qarm(&high_jerk_trajectory(Duration::from_secs(60)));
         }
         println!("Teach pendant ready!");
         teach_pendant(publisher).await
@@ -38,7 +38,7 @@ pub fn main() {
     }
 }
 
-async fn teach_pendant(publisher: Publisher<JointTrajectoryPoint>) {
+async fn teach_pendant(publisher: Publisher<JointTrajectory>) {
     let mut gamepad_engine = GamepadEngine::new();
     let mut loop_heartbeat_counter: u32 = 0;
     let mut trajectory_counter: u32 = 1;
@@ -59,7 +59,7 @@ async fn teach_pendant(publisher: Publisher<JointTrajectoryPoint>) {
             robot_command[2] = (robot_command[2] - right_joystick.1 as f64 * speed_factor).clamp(MIN_ANGLES[2], MAX_ANGLES[2]);
             robot_command[3] = (robot_command[3] - right_joystick.0 as f64 * speed_factor).clamp(MIN_ANGLES[3], MAX_ANGLES[3]);
             robot_command[4] = (robot_command[4] + (right_back_button as u8 as f64 - left_back_button as u8 as f64) * speed_factor).clamp(MIN_ANGLES[4], MAX_ANGLES[4]);
-            publisher.send_command_to_qarm(robot_command);
+            publisher.send_position_to_qarm(&robot_command);
             if gamepad.is_just_pressed(Button::West) {
                 println!("Adding point {robot_command:?} to the trajectory");
                 current_position_list.push(robot_command);
@@ -67,7 +67,7 @@ async fn teach_pendant(publisher: Publisher<JointTrajectoryPoint>) {
             if gamepad.is_just_pressed(Button::East) {
                 write_position_list_to_file(&current_position_list, &("trajectory".to_string()+&trajectory_counter.to_string()));
                 trajectory_counter += 1;
-                execute_trajectory(&equally_spaced_trajectory(&current_position_list).invert(), &publisher).await;
+                publisher.send_trajectory_to_qarm(&equally_spaced_trajectory(&current_position_list).invert());
                 current_position_list = vec![HOME_POSITION];
             }
 
@@ -80,31 +80,41 @@ async fn teach_pendant(publisher: Publisher<JointTrajectoryPoint>) {
     }
 }
 
-async fn execute_trajectory(trajectory: &Trajectory, publisher: &Publisher<JointTrajectoryPoint>) {
-    println!("Executing a saved trajectory with {} points", trajectory.len());
-    let trajectory_start_time = Instant::now();
-    publisher.send_command_to_qarm(trajectory[0].joint_position);
-    let trajectory_duration = trajectory.last().unwrap().time_from_start;
-    loop {
-        let current_time = trajectory_start_time.elapsed();
-        if current_time > trajectory_duration {break;}
-        publisher.send_command_to_qarm(trajectory[trajectory.segment_index(current_time)].joint_position);
-    }
-    publisher.send_command_to_qarm(trajectory.last().unwrap().joint_position);
-}
-
 trait MoveQarm {
-    fn send_command_to_qarm(&self, joint_position: JointPosition);
+    fn send_trajectory_to_qarm(&self, trajectory: &Trajectory);
+    fn send_position_to_qarm(&self, position: &JointPosition);
 }
 
-impl MoveQarm for Publisher<JointTrajectoryPoint> {
-    fn send_command_to_qarm(&self, joint_position: JointPosition) {
-        self.publish(&JointTrajectoryPoint{
-            positions: joint_position.to_vec(),
-            velocities: vec![],
-            accelerations: vec![],
-            effort: vec![],
-            time_from_start: r2r::builtin_interfaces::msg::Duration::default(),
+impl MoveQarm for Publisher<JointTrajectory> {
+    fn send_trajectory_to_qarm(&self, trajectory: &Trajectory) {
+        let mut ros_trajectory: Vec<JointTrajectoryPoint> = Vec::with_capacity(trajectory.len());
+        for (index, trajectory_point) in trajectory.iter().enumerate() {
+            ros_trajectory[index] = JointTrajectoryPoint {
+                positions: trajectory_point.joint_position.to_vec(),
+                velocities: vec![],
+                accelerations: vec![],
+                effort: vec![],
+                time_from_start: std_to_ros_duration(trajectory_point.time_from_start)
+            }
+        }
+        self.publish(&JointTrajectory{
+            points: ros_trajectory,
+            header: Header::default(),
+            joint_names: vec![]
         }).expect("Couldn't publish robot command");
     }
+    
+    fn send_position_to_qarm(&self, position: &JointPosition) {
+        let mut trajectory: Trajectory = Vec::with_capacity(2);
+        trajectory[0] = TrajectoryPoint{joint_position: position.clone(), time_from_start: Duration::ZERO};
+        trajectory[1] = TrajectoryPoint{joint_position: position.clone(), time_from_start: Duration::ZERO};
+        self.send_trajectory_to_qarm(&trajectory);
+    }
+}
+
+fn std_to_ros_duration(value: Duration) -> r2r::builtin_interfaces::msg::Duration {
+    return r2r::builtin_interfaces::msg::Duration{
+        sec: value.as_secs() as i32,
+        nanosec: value.subsec_nanos(),
+    };
 }
