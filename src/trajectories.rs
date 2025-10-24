@@ -42,7 +42,6 @@ impl TrajectoryExt for Trajectory{
             0 => return Trajectory::new(),
             length => {
                 let total_duration = self[length-1].time_from_start;
-                println!("total duration: {}", total_duration.as_secs_f64());
                 let mut inverted_trajectory = Trajectory::new();
                 for trajectory_point in self.iter().rev() {
                     inverted_trajectory.push(TrajectoryPoint{
