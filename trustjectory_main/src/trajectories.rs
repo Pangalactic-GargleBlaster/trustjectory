@@ -1,7 +1,7 @@
 use std::{f64, fs::File, path::Path, time::Duration};
 use std::io::Write;
-
 use nalgebra::{ArrayStorage, DMatrix, DVector, Matrix, SMatrix, SVector, VecStorage};
+use vector_algebra_macro::VectorAlgebra;
 
 
 pub const ARM_DEGREES_OF_FREEDOM: usize = 5;
@@ -24,44 +24,29 @@ pub const MIN_ANGLES: [f64; ARM_DEGREES_OF_FREEDOM] = [
 const MAX_ACCELERATIONS: [f64; ARM_DEGREES_OF_FREEDOM] = [f64::consts::PI/3.0, f64::consts::PI/3.0, f64::consts::PI/3.0, f64::consts::PI/3.0, 4.0];
 const BASIC_TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_secs(3);
 
-#[derive(Debug, Clone, Copy)]
-#[derive(serde::Serialize)]
-pub struct JointPosition {
-    pub joint_angles: [f64;ARM_DEGREES_OF_FREEDOM]
-}
+#[derive(Copy, Clone, Debug, serde::Serialize, VectorAlgebra)]
+pub struct JointPosition(pub [f64;ARM_DEGREES_OF_FREEDOM]);
+
+#[derive(VectorAlgebra)]
+pub struct JointVelocity(pub [f64;ARM_DEGREES_OF_FREEDOM]);
 
 impl JointPosition {
     fn weighted_euclidian_distance_to(&self, other_position: Self, weights: [f64;ARM_DEGREES_OF_FREEDOM]) -> f64 {
         let mut distance: f64 = 0.0;
         for index in 0..ARM_DEGREES_OF_FREEDOM {
-            distance += (self.joint_angles[index] - other_position.joint_angles[index]).powi(2) * weights[index];
+            distance += (self[index] - other_position[index]).powi(2) * weights[index];
         }
         return distance;
     }
 }
-impl core::ops::Sub for JointPosition {
-    type Output = Self;
 
-    fn sub(self, rhs: Self) -> Self {
-        let mut joint_angles = [0.0;ARM_DEGREES_OF_FREEDOM];
-        for index in 0..ARM_DEGREES_OF_FREEDOM {
-            joint_angles[index] = self.joint_angles[index] - rhs.joint_angles[index];
-        }
-        return JointPosition{joint_angles: joint_angles};
+impl From<JointPosition> for JointVelocity {
+    fn from(value: JointPosition) -> Self {
+        JointVelocity(value.0)
     }
 }
-impl core::ops::Add for JointPosition {
-    type Output = Self;
 
-    fn add(self, rhs: Self) -> Self {
-        let mut joint_angles = [0.0;ARM_DEGREES_OF_FREEDOM];
-        for index in 0..ARM_DEGREES_OF_FREEDOM {
-            joint_angles[index] = self.joint_angles[index] + rhs.joint_angles[index];
-        }
-        return JointPosition{joint_angles: joint_angles};
-    }
-}
-pub const HOME_POSITION:JointPosition = JointPosition{joint_angles: [0.0, 0.0, 0.0, 0.0, 0.5]};
+pub const HOME_POSITION:JointPosition = JointPosition([0.0, 0.0, 0.0, 0.0, 0.5]);
 #[derive(Debug)]
 pub struct TrajectoryPoint {
     pub joint_position: JointPosition,
@@ -119,9 +104,9 @@ pub fn high_jerk_trajectory(duration: Duration) -> Trajectory {
 
     // initial acceleration to one side
     let inflection_point: f64 = MAX_ANGLES[0]/4.0;
-    while current_position.joint_angles[0] < inflection_point {
+    while current_position[0] < inflection_point {
         current_velocity += MAX_ACCELERATIONS[0] * HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD.as_secs_f64();
-        current_position.joint_angles[0] += current_velocity * HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD.as_secs_f64();
+        current_position[0] += current_velocity * HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD.as_secs_f64();
         time_so_far += HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD;
         trajectory.push(TrajectoryPoint{
             joint_position: current_position,
@@ -131,9 +116,9 @@ pub fn high_jerk_trajectory(duration: Duration) -> Trajectory {
 
     // high-jerk oscillation
     while time_so_far < duration {
-        let acceleration_sign = if current_position.joint_angles[0] > 0.0 {-1.0} else {1.0};
+        let acceleration_sign = if current_position[0] > 0.0 {-1.0} else {1.0};
         current_velocity += acceleration_sign * MAX_ACCELERATIONS[0] * HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD.as_secs_f64();
-        current_position.joint_angles[0] += current_velocity * HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD.as_secs_f64();
+        current_position[0] += current_velocity * HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD.as_secs_f64();
         time_so_far += HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD;
         trajectory.push(TrajectoryPoint{
             joint_position: current_position,
@@ -196,13 +181,28 @@ impl CubicTrajectoryExt for CubicTrajectory {
     }
     
     fn from_position_list(points: &Vec<JointPosition>) -> Self {
-        let mut velocities: Vec<[f64;ARM_DEGREES_OF_FREEDOM]> = Vec::with_capacity(points.len());
-        velocities.push([0.0;ARM_DEGREES_OF_FREEDOM]);
-        for (index, point) in points[1..points.len()-1].iter().enumerate() {
-            velocities.push([0.0;5]);
+        let times_from_start = relative_times_from_position_list(points);
+        let mut velocities: Vec<JointVelocity> = Vec::with_capacity(points.len());
+        velocities.push(JointVelocity([0.0;ARM_DEGREES_OF_FREEDOM]));
+        for index in 1..points.len()-1 {
+            velocities.push((
+                (points[index+1]-points[index])
+                * ((times_from_start[index] - times_from_start[index-1])
+                / (times_from_start[index+1] - times_from_start[index])
+                / (times_from_start[index+1] - times_from_start[index-1]))
+                + (points[index]-points[index-1])
+                * ((times_from_start[index+1] - times_from_start[index])
+                / (times_from_start[index] - times_from_start[index-1])
+                / (times_from_start[index+1] - times_from_start[index-1]))
+            ).into());
         }
+        velocities.push(JointVelocity([0.0;ARM_DEGREES_OF_FREEDOM]));
         vec![]
     }
+}
+
+fn relative_times_from_position_list(points: &Vec<JointPosition>) -> Vec<f64> {
+    todo!()
 }
 
 #[cfg(test)]

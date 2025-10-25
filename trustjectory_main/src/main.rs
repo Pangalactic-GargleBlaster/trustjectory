@@ -54,11 +54,11 @@ async fn teach_pendant(publisher: Publisher<JointTrajectory>) {
             let left_back_button = gamepad.is_pressed(Button::LeftShoulder);
             let right_back_button = gamepad.is_pressed(Button::RightShoulder);
             let speed_factor = last_iteration.elapsed().as_secs_f64()/2.0; // target 0.5 rad/s
-            robot_command.joint_angles[0] = (robot_command.joint_angles[0] + left_joystick.0 as f64 * speed_factor).clamp(MIN_ANGLES[0], MAX_ANGLES[0]);
-            robot_command.joint_angles[1] = (robot_command.joint_angles[1] - left_joystick.1 as f64 * speed_factor).clamp(MIN_ANGLES[1], MAX_ANGLES[1]);
-            robot_command.joint_angles[2] = (robot_command.joint_angles[2] - right_joystick.1 as f64 * speed_factor).clamp(MIN_ANGLES[2], MAX_ANGLES[2]);
-            robot_command.joint_angles[3] = (robot_command.joint_angles[3] - right_joystick.0 as f64 * speed_factor).clamp(MIN_ANGLES[3], MAX_ANGLES[3]);
-            robot_command.joint_angles[4] = (robot_command.joint_angles[4] + (right_back_button as u8 as f64 - left_back_button as u8 as f64) * speed_factor).clamp(MIN_ANGLES[4], MAX_ANGLES[4]);
+            robot_command[0] = (robot_command[0] + left_joystick.0 as f64 * speed_factor).clamp(MIN_ANGLES[0], MAX_ANGLES[0]);
+            robot_command[1] = (robot_command[1] - left_joystick.1 as f64 * speed_factor).clamp(MIN_ANGLES[1], MAX_ANGLES[1]);
+            robot_command[2] = (robot_command[2] - right_joystick.1 as f64 * speed_factor).clamp(MIN_ANGLES[2], MAX_ANGLES[2]);
+            robot_command[3] = (robot_command[3] - right_joystick.0 as f64 * speed_factor).clamp(MIN_ANGLES[3], MAX_ANGLES[3]);
+            robot_command[4] = (robot_command[4] + (right_back_button as u8 as f64 - left_back_button as u8 as f64) * speed_factor).clamp(MIN_ANGLES[4], MAX_ANGLES[4]);
             publisher.send_position_to_qarm(&robot_command);
             if gamepad.is_just_pressed(Button::West) {
                 println!("Adding point {robot_command:?} to the trajectory");
@@ -95,7 +95,7 @@ impl MoveQarm for Publisher<JointTrajectory> {
         let mut ros_trajectory: Vec<JointTrajectoryPoint> = Vec::with_capacity(trajectory.len());
         for trajectory_point in trajectory {
             ros_trajectory.push(JointTrajectoryPoint {
-                positions: trajectory_point.joint_position.joint_angles.to_vec(),
+                positions: trajectory_point.joint_position.0.to_vec(),
                 velocities: vec![],
                 accelerations: vec![],
                 effort: vec![],
