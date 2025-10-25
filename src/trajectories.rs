@@ -24,8 +24,44 @@ pub const MIN_ANGLES: [f64; ARM_DEGREES_OF_FREEDOM] = [
 const MAX_ACCELERATIONS: [f64; ARM_DEGREES_OF_FREEDOM] = [f64::consts::PI/3.0, f64::consts::PI/3.0, f64::consts::PI/3.0, f64::consts::PI/3.0, 4.0];
 const BASIC_TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_secs(3);
 
-pub type JointPosition = [f64;ARM_DEGREES_OF_FREEDOM];
-pub const HOME_POSITION:JointPosition = [0.0, 0.0, 0.0, 0.0, 0.5];
+#[derive(Debug, Clone, Copy)]
+#[derive(serde::Serialize)]
+pub struct JointPosition {
+    pub joint_angles: [f64;ARM_DEGREES_OF_FREEDOM]
+}
+
+impl JointPosition {
+    fn weighted_euclidian_distance_to(&self, other_position: Self, weights: [f64;ARM_DEGREES_OF_FREEDOM]) -> f64 {
+        let mut distance: f64 = 0.0;
+        for index in 0..ARM_DEGREES_OF_FREEDOM {
+            distance += (self.joint_angles[index] - other_position.joint_angles[index]).powi(2) * weights[index];
+        }
+        return distance;
+    }
+}
+impl core::ops::Sub for JointPosition {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self {
+        let mut joint_angles = [0.0;ARM_DEGREES_OF_FREEDOM];
+        for index in 0..ARM_DEGREES_OF_FREEDOM {
+            joint_angles[index] = self.joint_angles[index] - rhs.joint_angles[index];
+        }
+        return JointPosition{joint_angles: joint_angles};
+    }
+}
+impl core::ops::Add for JointPosition {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        let mut joint_angles = [0.0;ARM_DEGREES_OF_FREEDOM];
+        for index in 0..ARM_DEGREES_OF_FREEDOM {
+            joint_angles[index] = self.joint_angles[index] + rhs.joint_angles[index];
+        }
+        return JointPosition{joint_angles: joint_angles};
+    }
+}
+pub const HOME_POSITION:JointPosition = JointPosition{joint_angles: [0.0, 0.0, 0.0, 0.0, 0.5]};
 #[derive(Debug)]
 pub struct TrajectoryPoint {
     pub joint_position: JointPosition,
@@ -34,7 +70,6 @@ pub struct TrajectoryPoint {
 pub type Trajectory = Vec<TrajectoryPoint>;
 pub trait TrajectoryExt {
     fn inverted(&self) -> Self;
-    fn segment_index(&self, time_from_start: Duration) -> usize;
 }
 impl TrajectoryExt for Trajectory{
     fn inverted(&self) -> Self {
@@ -53,35 +88,10 @@ impl TrajectoryExt for Trajectory{
             }
         }
     }
-
-    fn segment_index(&self, time_from_start: Duration) -> usize {
-        let mut starting_point_index: usize = 0;
-        let mut ending_point_index: usize = self.len()-1;
-        while ending_point_index - starting_point_index > 1 {
-            let midpoint_index = (starting_point_index + ending_point_index)/2;
-            if self[midpoint_index].time_from_start < time_from_start {
-                starting_point_index = midpoint_index;
-            } else {
-                ending_point_index = midpoint_index;
-            }
-        }
-        println!("segment index: {starting_point_index}");
-        return starting_point_index;
-    }
 }
 
 pub trait JointPositionExt {
-    fn euclidian_distance_to(&self, other_position: Self) -> f64;
-}
-
-impl JointPositionExt for JointPosition {
-    fn euclidian_distance_to(&self, other_position: Self) -> f64 {
-        let mut distance: f64 = 0.0;
-        for index in 0..ARM_DEGREES_OF_FREEDOM {
-            distance += (self[index] - other_position[index]).powi(2);
-        }
-        return distance;
-    }
+    fn weighted_euclidian_distance_to(&self, other_position: Self, weights: [f64;ARM_DEGREES_OF_FREEDOM]) -> f64;
 }
 
 pub fn equally_spaced_trajectory(points: &Vec<JointPosition>) -> Trajectory {
@@ -109,9 +119,9 @@ pub fn high_jerk_trajectory(duration: Duration) -> Trajectory {
 
     // initial acceleration to one side
     let inflection_point: f64 = MAX_ANGLES[0]/4.0;
-    while current_position[0] < inflection_point {
+    while current_position.joint_angles[0] < inflection_point {
         current_velocity += MAX_ACCELERATIONS[0] * HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD.as_secs_f64();
-        current_position[0] += current_velocity * HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD.as_secs_f64();
+        current_position.joint_angles[0] += current_velocity * HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD.as_secs_f64();
         time_so_far += HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD;
         trajectory.push(TrajectoryPoint{
             joint_position: current_position,
@@ -121,9 +131,9 @@ pub fn high_jerk_trajectory(duration: Duration) -> Trajectory {
 
     // high-jerk oscillation
     while time_so_far < duration {
-        let acceleration_sign = if current_position[0] > 0.0 {-1.0} else {1.0};
+        let acceleration_sign = if current_position.joint_angles[0] > 0.0 {-1.0} else {1.0};
         current_velocity += acceleration_sign * MAX_ACCELERATIONS[0] * HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD.as_secs_f64();
-        current_position[0] += current_velocity * HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD.as_secs_f64();
+        current_position.joint_angles[0] += current_velocity * HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD.as_secs_f64();
         time_so_far += HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD;
         trajectory.push(TrajectoryPoint{
             joint_position: current_position,
@@ -140,46 +150,75 @@ pub fn write_position_list_to_file(trajectory: &Vec<JointPosition>, file_name: &
     _ = file.write_all(json_string.as_bytes());
 }
 
-type Cubic = [f64;4];
-type Matrix14 = SMatrix<f64, 14, 14>;
-type Vector14 = SVector<f64, 14>;
-/// The cubics that this function returns all start at t=0 at the knots.
-/// The first element is the constant coefficient and the last is the cubic coefficient.
-fn c_q_q_c_kernel(durations: [Duration;4]) -> [Cubic;4] {
-    let mut matrix: Matrix14 = Matrix14::zeros();
-    let mut vector: Vector14 = Vector14::zeros();
-    let delta_ts: [f64;4] = durations.map(|duration| duration.as_secs_f64());
-    let delta_ts_squared: [f64;4] = durations.map(|duration| duration.as_secs_f64().powi(2));
-    let delta_ts_cubed: [f64;4] = durations.map(|duration| duration.as_secs_f64().powi(3));
-    let f0_offset = 0;
-    let f1_offset = 4;
-    let f2_offset = 7;
-    let f3_offset = 10;
-    // f0(0) = 0
-    matrix[(0,f0_offset)] = 1.0;
-    // f0'(0) = 0
-    matrix[(1,f0_offset+1)] = 1.0;
-    // f0(end) = 0
-    matrix[(2,f0_offset)] = 1.0;
-    matrix[(2,f0_offset+1)] = delta_ts[0];
-    matrix[(2,f0_offset)] = delta_ts_squared[0];
-    matrix[(2,f0_offset)] = delta_ts_cubed[0];
-    // f1(0) = 0
-    // f1'(0) = f0'(end) <==> f1'(0) - f0'(end) = 0
-    // f1(end) = 1
-    // f1'(end) = 0
-    // f2(0) = 1
-    // f2'(0) = 0
-    // f2(end) = 0
-    // f3(0) = 0
-    // f3'(0) = f2'(end) <==> f3'(0) - f2'(end) = 0
-    // f3(end) = 0
-    // f3'(end) = 0
-    let coefficients: Vector14 = matrix.lu().solve(&vector).expect("unable to solve the system of equations");
-    return [
-        [coefficients[0], coefficients[1], coefficients[2], coefficients[3]],
-        [coefficients[4], coefficients[5], coefficients[6], 0.0],
-        [coefficients[7], coefficients[8], coefficients[9], 0.0],
-        [coefficients[10], coefficients[11], coefficients[12], coefficients[13]],
-    ];
+struct Cubic {
+    coefficients: [f64;4],
+}
+
+impl Cubic {
+    fn interpolate(&self, time: &Duration) -> f64 {
+        let seconds = time.as_secs_f64();
+        return self.coefficients[0] + seconds*self.coefficients[1] + seconds.powi(2)*self.coefficients[2] + seconds.powi(3)*self.coefficients[3];
+    }
+}
+
+struct CubicTrajectorySegment {
+    cubic: Cubic,
+    end_time: Duration
+}
+
+type CubicTrajectory = Vec<CubicTrajectorySegment>;
+
+trait CubicTrajectoryExt {
+    fn segment_index(&self, time_from_start: Duration) -> usize;
+    fn interpolate(&self, time_from_start: Duration) -> f64;
+    fn from_position_list(points: &Vec<JointPosition>) -> Self;
+}
+
+impl CubicTrajectoryExt for CubicTrajectory {
+    fn segment_index(&self, time_from_start: Duration) -> usize {
+        let mut lower_bound_segment_index: usize = 0;
+        let mut upper_bound_segment_index: usize = self.len()-1;
+        while upper_bound_segment_index - lower_bound_segment_index > 1 {
+            let midpoint_index = (lower_bound_segment_index + upper_bound_segment_index)/2;
+            if self[midpoint_index].end_time < time_from_start {
+                lower_bound_segment_index = midpoint_index;
+            } else {
+                upper_bound_segment_index = midpoint_index;
+            }
+        }
+        return if time_from_start < self[lower_bound_segment_index].end_time {lower_bound_segment_index} else {upper_bound_segment_index};
+    }
+
+    fn interpolate(&self, time_from_start: Duration) -> f64 {
+        let segment_index = self.segment_index(time_from_start);
+        let local_time = if segment_index == 0 {time_from_start} else {time_from_start - self[segment_index-1].end_time};
+        return self[segment_index].cubic.interpolate(&local_time);
+    }
+    
+    fn from_position_list(points: &Vec<JointPosition>) -> Self {
+        let mut velocities: Vec<[f64;ARM_DEGREES_OF_FREEDOM]> = Vec::with_capacity(points.len());
+        velocities.push([0.0;ARM_DEGREES_OF_FREEDOM]);
+        for (index, point) in points[1..points.len()-1].iter().enumerate() {
+            velocities.push([0.0;5]);
+        }
+        vec![]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const FLAT_CUBIC: Cubic = Cubic{coefficients: [0.0,0.0,0.0,0.0]};
+    #[test]
+    fn test_segment_index() {
+        let cubic_trajectory: CubicTrajectory = vec![
+            CubicTrajectorySegment{cubic: FLAT_CUBIC, end_time: Duration::from_secs(1)},
+            CubicTrajectorySegment{cubic: FLAT_CUBIC, end_time: Duration::from_secs(2)},
+            CubicTrajectorySegment{cubic: FLAT_CUBIC, end_time: Duration::from_secs(3)},
+            CubicTrajectorySegment{cubic: FLAT_CUBIC, end_time: Duration::from_secs(4)},
+        ];
+        assert_eq!(cubic_trajectory.segment_index(Duration::from_secs_f64(0.5)), 0);
+        assert_eq!(cubic_trajectory.segment_index(Duration::from_secs_f64(1.5)), 1);
+        assert_eq!(cubic_trajectory.segment_index(Duration::from_secs_f64(3.5)), 3);
+    }
 }

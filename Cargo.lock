@@ -1293,6 +1293,7 @@ dependencies = [
  "gamepad",
  "nalgebra",
  "r2r",
+ "serde",
  "serde_json",
 ]
 

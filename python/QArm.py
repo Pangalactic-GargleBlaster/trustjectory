@@ -24,7 +24,7 @@ node = Node("QArm")
 qos_profile = QoSProfile(**{
     'reliability': QoSReliabilityPolicy.RELIABLE,
     'durability': QoSDurabilityPolicy.VOLATILE,
-    'depth': 5,
+    'depth': 1,
 })
 publisher = node.create_publisher(JointTrajectoryPoint, '/robot_state', qos_profile)
 print("Created the publisher")
