@@ -1,4 +1,5 @@
-use std::{f64, fs::File, path::Path, time::Duration};
+use core::f64;
+use std::{fs::File, path::Path, time::Duration};
 use std::io::Write;
 use nalgebra::{ArrayStorage, DMatrix, DVector, Matrix, SMatrix, SVector, VecStorage};
 use vector_algebra_macro::VectorAlgebra;
@@ -20,8 +21,11 @@ pub const MIN_ANGLES: [f64; ARM_DEGREES_OF_FREEDOM] = [
     -160.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
     0.1
 ];
-// const MAX_VELOCITIES: [f64; ARM_DEGREES_OF_FREEDOM] = [f64::consts::PI/2.0, f64::consts::PI/2.0, f64::consts::PI/2.0, f64::consts::PI/2.0, 1.0];
+const MAX_VELOCITIES: [f64; ARM_DEGREES_OF_FREEDOM] = [f64::consts::PI/2.0, f64::consts::PI/2.0, f64::consts::PI/2.0, f64::consts::PI/2.0, 1.0];
+const COMBINED_VELOCITY: f64 = f64::consts::PI/2.0;
+const JOINT_DISTANCE_WEIGHTS: [f64; ARM_DEGREES_OF_FREEDOM] = [1.0, 1.0, 1.0, 1.0, 2.0/f64::consts::PI];
 const MAX_ACCELERATIONS: [f64; ARM_DEGREES_OF_FREEDOM] = [f64::consts::PI/3.0, f64::consts::PI/3.0, f64::consts::PI/3.0, f64::consts::PI/3.0, 4.0];
+const COMBINED_ACCELERATION: f64 = f64::consts::PI/3.0;
 const BASIC_TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_secs(3);
 
 #[derive(Copy, Clone, Debug, serde::Serialize, VectorAlgebra)]
@@ -31,10 +35,10 @@ pub struct JointPosition(pub [f64;ARM_DEGREES_OF_FREEDOM]);
 pub struct JointVelocity(pub [f64;ARM_DEGREES_OF_FREEDOM]);
 
 impl JointPosition {
-    fn weighted_euclidian_distance_to(&self, other_position: Self, weights: [f64;ARM_DEGREES_OF_FREEDOM]) -> f64 {
+    fn weighted_distance_to(&self, other_position: Self) -> f64 {
         let mut distance: f64 = 0.0;
         for index in 0..ARM_DEGREES_OF_FREEDOM {
-            distance += (self[index] - other_position[index]).powi(2) * weights[index];
+            distance += (self[index] - other_position[index]).powi(2) * JOINT_DISTANCE_WEIGHTS[index];
         }
         return distance;
     }
@@ -151,9 +155,9 @@ struct CubicTrajectorySegment {
     end_time: Duration
 }
 
-type CubicTrajectory = Vec<CubicTrajectorySegment>;
+pub type CubicTrajectory = Vec<CubicTrajectorySegment>;
 
-trait CubicTrajectoryExt {
+pub trait CubicTrajectoryExt {
     fn segment_index(&self, time_from_start: Duration) -> usize;
     fn interpolate(&self, time_from_start: Duration) -> f64;
     fn from_position_list(points: &Vec<JointPosition>) -> Self;
@@ -201,8 +205,34 @@ impl CubicTrajectoryExt for CubicTrajectory {
     }
 }
 
+const MIN_SPEED_LIMITED_DISTANCE: f64 = COMBINED_VELOCITY * COMBINED_VELOCITY / COMBINED_ACCELERATION;
+
 fn relative_times_from_position_list(points: &Vec<JointPosition>) -> Vec<f64> {
-    todo!()
+    let mut cumulative_distances: Vec<f64> = Vec::with_capacity(points.len());
+    let mut total_so_far = 0.0;
+    cumulative_distances.push(total_so_far);
+    for index in 1..points.len() {
+        total_so_far += points[index].weighted_distance_to(points[index-1]);
+        cumulative_distances.push(total_so_far);
+    }
+    let total_distance = total_so_far;
+    let mut times: Vec<f64> = Vec::with_capacity(points.len());
+    if total_distance <= MIN_SPEED_LIMITED_DISTANCE {
+        let inflection_time = (total_distance/COMBINED_ACCELERATION).sqrt();
+        let total_time = 2.0 * inflection_time;
+        let mut index = 0;
+        while cumulative_distances[index] <= total_distance/2.0 {
+            times.push((cumulative_distances[index]*2.0/COMBINED_ACCELERATION).sqrt());
+            index += 1;
+        }
+        while index < points.len() {
+            // times.push(total_time - ().sqrt());
+            index += 1;
+        }
+    } else {
+
+    }
+    vec![]
 }
 
 #[cfg(test)]
