@@ -1,9 +1,10 @@
 use core::f64;
+use std::fmt::Display;
 use std::{fs::File, path::Path, time::Duration};
 use std::io::Write;
 use nalgebra::{ArrayStorage, DMatrix, DVector, Matrix, SMatrix, SVector, VecStorage};
 use vector_algebra_macro::VectorAlgebra;
-
+use approx::assert_abs_diff_eq;
 
 pub const ARM_DEGREES_OF_FREEDOM: usize = 5;
 const DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR: f64 = f64::consts::PI/180.0;
@@ -138,7 +139,7 @@ pub fn write_position_list_to_file(trajectory: &Vec<JointPosition>, file_name: &
     let mut file = File::create(Path::new(&("trajectories/".to_string()+file_name))).expect("Failed to create the trajectory file");
     _ = file.write_all(json_string.as_bytes());
 }
-
+#[derive(Debug)]
 struct Cubic {
     coefficients: [f64;4],
 }
@@ -147,6 +148,10 @@ impl Cubic {
     fn interpolate(&self, time: &Duration) -> f64 {
         let seconds = time.as_secs_f64();
         return self.coefficients[0] + seconds*self.coefficients[1] + seconds.powi(2)*self.coefficients[2] + seconds.powi(3)*self.coefficients[3];
+    }
+
+    fn derivative(&self) -> Self {
+        Cubic { coefficients: [self.coefficients[1], 2.0*self.coefficients[2], 3.0*self.coefficients[3], 0.0] }
     }
 }
 
@@ -201,6 +206,10 @@ impl CubicTrajectoryExt for CubicTrajectory {
             ).into());
         }
         velocities.push(JointVelocity([0.0;ARM_DEGREES_OF_FREEDOM]));
+        for index in 1..points.len()-1 {
+
+        }
+
         vec![]
     }
 }
@@ -221,11 +230,11 @@ fn relative_times_from_position_list(points: &Vec<JointPosition>) -> Vec<f64> {
         let inflection_time = (total_distance/COMBINED_ACCELERATION).sqrt();
         let total_time = 2.0 * inflection_time;
         let mut index = 0;
-        while cumulative_distances[index] <= total_distance/2.0 {
+        while cumulative_distances[index] <= total_distance/2.0 { // acceleration phase
             times.push((cumulative_distances[index]*2.0/COMBINED_ACCELERATION).sqrt());
             index += 1;
         }
-        while index < points.len() {
+        while index < points.len() { // deceleration phase
             // times.push(total_time - ().sqrt());
             index += 1;
         }
@@ -233,6 +242,34 @@ fn relative_times_from_position_list(points: &Vec<JointPosition>) -> Vec<f64> {
 
     }
     vec![]
+}
+
+fn two_parabolas_given_positions_and_velocities(start_position: f64, end_position: f64, start_velocity: f64, end_velocity: f64, duration: Duration) -> (CubicTrajectorySegment, CubicTrajectorySegment){
+    // solve for the knot time
+    let duration = duration.as_secs_f64();
+    let knot;
+    let acceleration;
+    if end_velocity == start_velocity {
+        knot = duration/2.0;
+        acceleration = 4.0*(end_position - start_position - start_velocity*duration)/duration.powi(2);
+    } else {
+        let a = start_velocity-end_velocity;
+        let b = 2.0*(start_position - end_position + end_velocity*duration);
+        let c = (end_position-start_position)*duration - duration.powi(2)/2.0*(start_velocity+end_velocity);
+        let plus_or_minus_term = (b.powi(2) - 4.0*a*c).sqrt();
+        let knot_minus = (-b - plus_or_minus_term)/(2.0*a);
+        let knot_plus = (-b + plus_or_minus_term)/(2.0*a);
+        let knot_minus_valid = knot_minus >= 0.0 && knot_minus <= duration;
+        let knot_plus_valid = knot_plus >= 0.0 && knot_plus <= duration;
+        assert_ne!(knot_minus_valid, knot_plus_valid);
+        knot = if knot_minus_valid {knot_minus} else {knot_plus};
+        acceleration = (end_velocity - start_velocity)/(2.0*knot - duration);
+    }
+    let knot_velocity = start_velocity + knot*acceleration;
+    let knot_position = start_position + start_velocity*knot + acceleration/2.0*knot*knot;
+    let first_parabola = Cubic{coefficients: [start_position, start_velocity, acceleration/2.0, 0.0]};
+    let second_parabola = Cubic{coefficients: [knot_position, knot_velocity, -acceleration/2.0, 0.0]};
+    (CubicTrajectorySegment{cubic: first_parabola, end_time: Duration::from_secs_f64(knot)}, CubicTrajectorySegment{cubic: second_parabola, end_time: Duration::from_secs_f64(duration - knot)})
 }
 
 #[cfg(test)]
@@ -250,5 +287,25 @@ mod tests {
         assert_eq!(cubic_trajectory.segment_index(Duration::from_secs_f64(0.5)), 0);
         assert_eq!(cubic_trajectory.segment_index(Duration::from_secs_f64(1.5)), 1);
         assert_eq!(cubic_trajectory.segment_index(Duration::from_secs_f64(3.5)), 3);
+    }
+
+    #[test]
+    fn test_two_parabolas() {
+        // 0,0 1,0 1
+        let (first_segment, second_segment) = two_parabolas_given_positions_and_velocities(0.0, 1.0, 0.0, 0.0, Duration::from_secs_f64(1.0));
+        assert_eq!(first_segment.end_time, Duration::from_secs_f64(0.5));
+        assert_eq!(first_segment.cubic.coefficients, [0.0, 0.0, 2.0, 0.0]);
+        assert_eq!(second_segment.end_time, Duration::from_secs_f64(0.5));
+        assert_eq!(second_segment.cubic.coefficients, [0.5, 2.0, -2.0, 0.0]);
+
+        // 0,0 1,1 1
+        let (first_segment, second_segment) = two_parabolas_given_positions_and_velocities(0.0, 1.0, 0.0, 1.0, Duration::from_secs_f64(1.0));
+        assert_abs_diff_eq!(first_segment.cubic.interpolate(&Duration::ZERO), 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(first_segment.cubic.derivative().interpolate(&Duration::ZERO), 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(second_segment.cubic.interpolate(&second_segment.end_time), 1.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(second_segment.cubic.derivative().interpolate(&second_segment.end_time), 1.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(first_segment.cubic.interpolate(&first_segment.end_time), second_segment.cubic.interpolate(&Duration::ZERO), epsilon = 1e-5);
+        assert_abs_diff_eq!(first_segment.cubic.derivative().interpolate(&first_segment.end_time), second_segment.cubic.derivative().interpolate(&Duration::ZERO), epsilon = 1e-5);
+        println!("The derived parabolas are {:?} until {:?} and {:?} till 1", first_segment.cubic, first_segment.end_time, second_segment.cubic);
     }
 }
