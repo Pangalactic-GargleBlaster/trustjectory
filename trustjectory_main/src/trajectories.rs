@@ -1,8 +1,7 @@
-use core::f64;
-use std::fmt::Display;
+use core::{f64};
+use std::mem::{self};
 use std::{fs::File, path::Path, time::Duration};
 use std::io::Write;
-use nalgebra::{ArrayStorage, DMatrix, DVector, Matrix, SMatrix, SVector, VecStorage};
 use vector_algebra_macro::VectorAlgebra;
 use approx::assert_abs_diff_eq;
 
@@ -28,11 +27,12 @@ const JOINT_DISTANCE_WEIGHTS: [f64; ARM_DEGREES_OF_FREEDOM] = [1.0, 1.0, 1.0, 1.
 const MAX_ACCELERATIONS: [f64; ARM_DEGREES_OF_FREEDOM] = [f64::consts::PI/3.0, f64::consts::PI/3.0, f64::consts::PI/3.0, f64::consts::PI/3.0, 4.0];
 const COMBINED_ACCELERATION: f64 = f64::consts::PI/3.0;
 const BASIC_TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_secs(3);
+const TRAJECTORY_SAMPLING_PERIOD: Duration = Duration::from_millis(10);
 
 #[derive(Copy, Clone, Debug, serde::Serialize, VectorAlgebra)]
 pub struct JointPosition(pub [f64;ARM_DEGREES_OF_FREEDOM]);
 
-#[derive(VectorAlgebra)]
+#[derive(Copy, Clone, VectorAlgebra)]
 pub struct JointVelocity(pub [f64;ARM_DEGREES_OF_FREEDOM]);
 
 impl JointPosition {
@@ -57,17 +57,19 @@ pub struct TrajectoryPoint {
     pub joint_position: JointPosition,
     pub time_from_start: Duration,
 }
-pub type Trajectory = Vec<TrajectoryPoint>;
-pub trait TrajectoryExt {
+pub type PointTrajectory = Vec<TrajectoryPoint>;
+pub trait PointTrajectoryExt {
     fn inverted(&self) -> Self;
+    fn from_parametric_trajectory(parametric_trajectory: &ParametricTrajectory) -> Self;
 }
-impl TrajectoryExt for Trajectory{
+
+impl PointTrajectoryExt for PointTrajectory{
     fn inverted(&self) -> Self {
         match self.len() {
-            0 => return Trajectory::new(),
+            0 => return PointTrajectory::new(),
             length => {
                 let total_duration = self[length-1].time_from_start;
-                let mut inverted_trajectory = Trajectory::new();
+                let mut inverted_trajectory = PointTrajectory::new();
                 for trajectory_point in self.iter().rev() {
                     inverted_trajectory.push(TrajectoryPoint{
                         joint_position: trajectory_point.joint_position,
@@ -78,15 +80,28 @@ impl TrajectoryExt for Trajectory{
             }
         }
     }
+
+    fn from_parametric_trajectory(parametric_trajectory: &ParametricTrajectory) -> Self {
+        let mut point_trajectory: PointTrajectory = Vec::new();
+        let mut time_so_far: Duration = Duration::ZERO;
+        let mut segment_local_time: Duration = Duration::ZERO;
+        let mut segment_index = 0;
+        while segment_index < parametric_trajectory.len() || segment_local_time <= parametric_trajectory[segment_index].duration {
+            point_trajectory.push(TrajectoryPoint { joint_position: parametric_trajectory[segment_index].interpolate(segment_local_time), time_from_start: time_so_far });
+            time_so_far += TRAJECTORY_SAMPLING_PERIOD;
+            segment_local_time += TRAJECTORY_SAMPLING_PERIOD;
+            while segment_local_time > parametric_trajectory[segment_index].duration {
+                segment_local_time -= parametric_trajectory[segment_index].duration;
+                segment_index += 1;
+            }
+        }
+        return point_trajectory;
+    }
 }
 
-pub trait JointPositionExt {
-    fn weighted_euclidian_distance_to(&self, other_position: Self, weights: [f64;ARM_DEGREES_OF_FREEDOM]) -> f64;
-}
-
-pub fn equally_spaced_trajectory(points: &Vec<JointPosition>) -> Trajectory {
+pub fn equally_spaced_trajectory(points: &Vec<JointPosition>) -> PointTrajectory {
     let mut current_point_time = Duration::ZERO;
-    let mut trajectory: Trajectory = vec![];
+    let mut trajectory: PointTrajectory = vec![];
     for point in points {
         trajectory.push(TrajectoryPoint{
             joint_position: *point,
@@ -98,11 +113,11 @@ pub fn equally_spaced_trajectory(points: &Vec<JointPosition>) -> Trajectory {
 }
 
 const HIGH_JERK_TRAJECTORY_SAMPLING_PERIOD: Duration = Duration::from_millis(1);
-pub fn high_jerk_trajectory(duration: Duration) -> Trajectory {
+pub fn high_jerk_trajectory(duration: Duration) -> PointTrajectory {
     let mut current_position: JointPosition = HOME_POSITION;
     let mut current_velocity: f64 = 0.0;
     let mut time_so_far = Duration::ZERO;
-    let mut trajectory: Trajectory = vec![TrajectoryPoint{
+    let mut trajectory: PointTrajectory = vec![TrajectoryPoint{
         joint_position: current_position,
         time_from_start: time_so_far
     }];
@@ -139,56 +154,120 @@ pub fn write_position_list_to_file(trajectory: &Vec<JointPosition>, file_name: &
     let mut file = File::create(Path::new(&("trajectories/".to_string()+file_name))).expect("Failed to create the trajectory file");
     _ = file.write_all(json_string.as_bytes());
 }
-#[derive(Debug)]
-struct Cubic {
-    coefficients: [f64;4],
+
+#[derive(Copy, Clone, Default)]
+struct Parabola {
+    coefficients: [f64;3]
 }
 
-impl Cubic {
-    fn interpolate(&self, time: &Duration) -> f64 {
-        let seconds = time.as_secs_f64();
-        return self.coefficients[0] + seconds*self.coefficients[1] + seconds.powi(2)*self.coefficients[2] + seconds.powi(3)*self.coefficients[3];
+
+impl Parabola {
+    fn interpolate(&self, time_from_start: Duration) -> f64 {
+        let time_from_start = time_from_start.as_secs_f64();
+        return self.coefficients[0] + self.coefficients[1]*time_from_start + self.coefficients[2]*time_from_start.powi(2);
     }
 
     fn derivative(&self) -> Self {
-        Cubic { coefficients: [self.coefficients[1], 2.0*self.coefficients[2], 3.0*self.coefficients[3], 0.0] }
+        return Parabola { coefficients: [self.coefficients[1], 2.0*self.coefficients[2], 0.0] }
+    }
+}
+#[derive(Default)]
+struct TwoParabolasSegment {
+    first_parabola: Parabola,
+    second_parabola: Parabola,
+    inflection_time: Duration
+}
+
+impl TwoParabolasSegment {
+    fn interpolate(&self, mut time_from_start: Duration) -> f64 {
+        let parabola;
+        if time_from_start <= self.inflection_time {
+            parabola = self.first_parabola;
+        } else {
+            parabola = self.second_parabola;
+            time_from_start -= self.inflection_time;
+        }
+        return parabola.interpolate(time_from_start);
+    }
+
+    fn from_positions_and_velocities(start_position: f64, end_position: f64, start_velocity: f64, end_velocity: f64, duration: Duration) -> Self {
+        // solve for the knot time
+        let duration = duration.as_secs_f64();
+        let knot;
+        let acceleration;
+        if end_velocity == start_velocity {
+            knot = duration/2.0;
+            acceleration = 4.0*(end_position - start_position - start_velocity*duration)/duration.powi(2);
+        } else {
+            let a = start_velocity-end_velocity;
+            let b = 2.0*(start_position - end_position + end_velocity*duration);
+            let c = (end_position-start_position)*duration - duration.powi(2)/2.0*(start_velocity+end_velocity);
+            let plus_or_minus_term = (b.powi(2) - 4.0*a*c).sqrt();
+            let knot_minus = (-b - plus_or_minus_term)/(2.0*a);
+            let knot_plus = (-b + plus_or_minus_term)/(2.0*a);
+            let knot_minus_valid = knot_minus >= 0.0 && knot_minus <= duration;
+            let knot_plus_valid = knot_plus >= 0.0 && knot_plus <= duration;
+            assert_ne!(knot_minus_valid, knot_plus_valid);
+            knot = if knot_minus_valid {knot_minus} else {knot_plus};
+            acceleration = (end_velocity - start_velocity)/(2.0*knot - duration);
+        }
+        let knot_velocity = start_velocity + knot*acceleration;
+        let knot_position = start_position + start_velocity*knot + acceleration/2.0*knot*knot;
+        let first_parabola = Parabola{coefficients:[start_position, start_velocity, acceleration/2.0]};
+        let second_parabola = Parabola{coefficients:[knot_position, knot_velocity, -acceleration/2.0]};
+        return Self{
+            first_parabola: first_parabola,
+            second_parabola: second_parabola,
+            inflection_time: Duration::from_secs_f64(knot)
+        };
+    }
+
+}
+
+pub struct TrajectorySegment {
+    joint_trajectories: [TwoParabolasSegment; ARM_DEGREES_OF_FREEDOM],
+    duration: Duration
+}
+
+impl TrajectorySegment {
+    fn interpolate(&self, time_from_start: Duration) -> JointPosition {
+        assert!(time_from_start >= Duration::ZERO && time_from_start <= self.duration);
+        let mut joint_positions = [0.0;ARM_DEGREES_OF_FREEDOM];
+        for index in 0..ARM_DEGREES_OF_FREEDOM {
+            joint_positions[index] = self.joint_trajectories[index].interpolate(time_from_start);
+        }
+        return JointPosition(joint_positions);
+    }
+
+    fn from_positions_and_velocities(
+        start_position: JointPosition,
+        end_position: JointPosition,
+        start_velocity: JointVelocity,
+        end_velocity: JointVelocity,
+        duration: Duration,
+    ) -> Self {
+        let joint_trajectories =
+            std::array::from_fn(|i: usize| {
+                TwoParabolasSegment::from_positions_and_velocities(
+                    start_position[i],
+                    end_position[i],
+                    start_velocity[i],
+                    end_velocity[i],
+                    duration,
+                )
+            });
+
+        TrajectorySegment { joint_trajectories, duration }
     }
 }
 
-struct CubicTrajectorySegment {
-    cubic: Cubic,
-    end_time: Duration
-}
+pub type ParametricTrajectory = Vec<TrajectorySegment>;
 
-pub type CubicTrajectory = Vec<CubicTrajectorySegment>;
-
-pub trait CubicTrajectoryExt {
-    fn segment_index(&self, time_from_start: Duration) -> usize;
-    fn interpolate(&self, time_from_start: Duration) -> f64;
+pub trait ParametricTrajectoryExt {
     fn from_position_list(points: &Vec<JointPosition>) -> Self;
 }
 
-impl CubicTrajectoryExt for CubicTrajectory {
-    fn segment_index(&self, time_from_start: Duration) -> usize {
-        let mut lower_bound_segment_index: usize = 0;
-        let mut upper_bound_segment_index: usize = self.len()-1;
-        while upper_bound_segment_index - lower_bound_segment_index > 1 {
-            let midpoint_index = (lower_bound_segment_index + upper_bound_segment_index)/2;
-            if self[midpoint_index].end_time < time_from_start {
-                lower_bound_segment_index = midpoint_index;
-            } else {
-                upper_bound_segment_index = midpoint_index;
-            }
-        }
-        return if time_from_start < self[lower_bound_segment_index].end_time {lower_bound_segment_index} else {upper_bound_segment_index};
-    }
-
-    fn interpolate(&self, time_from_start: Duration) -> f64 {
-        let segment_index = self.segment_index(time_from_start);
-        let local_time = if segment_index == 0 {time_from_start} else {time_from_start - self[segment_index-1].end_time};
-        return self[segment_index].cubic.interpolate(&local_time);
-    }
-    
+impl ParametricTrajectoryExt for ParametricTrajectory {
     fn from_position_list(points: &Vec<JointPosition>) -> Self {
         let times_from_start = relative_times_from_position_list(points);
         let mut velocities: Vec<JointVelocity> = Vec::with_capacity(points.len());
@@ -206,11 +285,11 @@ impl CubicTrajectoryExt for CubicTrajectory {
             ).into());
         }
         velocities.push(JointVelocity([0.0;ARM_DEGREES_OF_FREEDOM]));
-        for index in 1..points.len()-1 {
-
+        let mut parametric_trajectory: ParametricTrajectory = Vec::with_capacity(points.len()-1);
+        for index in 0..points.len()-1 {
+            parametric_trajectory.push(TrajectorySegment::from_positions_and_velocities(points[index], points[index+1], velocities[index], velocities[index+1], Duration::from_secs_f64(times_from_start[index+1] - times_from_start[index])));
         }
-
-        vec![]
+        return parametric_trajectory;
     }
 }
 
@@ -235,77 +314,72 @@ fn relative_times_from_position_list(points: &Vec<JointPosition>) -> Vec<f64> {
             index += 1;
         }
         while index < points.len() { // deceleration phase
-            // times.push(total_time - ().sqrt());
+            let time_from_end = ((total_distance-cumulative_distances[index])*2.0/COMBINED_ACCELERATION).sqrt();
+            times.push(total_time - time_from_end);
             index += 1;
         }
     } else {
-
+        let inflection_time = (MIN_SPEED_LIMITED_DISTANCE/COMBINED_ACCELERATION).sqrt();
+        let linear_time = (total_distance - MIN_SPEED_LIMITED_DISTANCE) / COMBINED_VELOCITY;
+        let total_time = 2.0*inflection_time + linear_time;
+        let mut index = 0;
+        while cumulative_distances[index] <= MIN_SPEED_LIMITED_DISTANCE/2.0 { // acceleration phase
+            times.push((cumulative_distances[index]*2.0/COMBINED_ACCELERATION).sqrt());
+            index += 1;
+        }
+        while cumulative_distances[index] <= total_distance - MIN_SPEED_LIMITED_DISTANCE/2.0 { // constant velocity phase
+            let time_since_inflection = (cumulative_distances[index] - MIN_SPEED_LIMITED_DISTANCE/2.0)/COMBINED_VELOCITY;
+            times.push(inflection_time + time_since_inflection);
+            index += 1;
+        }
+        while index < points.len() { // deceleration phase
+            let time_from_end = ((total_distance-cumulative_distances[index])*2.0/COMBINED_ACCELERATION).sqrt();
+            times.push(total_time - time_from_end);
+            index += 1;
+        }
     }
-    vec![]
+    return times;
 }
 
-fn two_parabolas_given_positions_and_velocities(start_position: f64, end_position: f64, start_velocity: f64, end_velocity: f64, duration: Duration) -> (CubicTrajectorySegment, CubicTrajectorySegment){
-    // solve for the knot time
-    let duration = duration.as_secs_f64();
-    let knot;
-    let acceleration;
-    if end_velocity == start_velocity {
-        knot = duration/2.0;
-        acceleration = 4.0*(end_position - start_position - start_velocity*duration)/duration.powi(2);
-    } else {
-        let a = start_velocity-end_velocity;
-        let b = 2.0*(start_position - end_position + end_velocity*duration);
-        let c = (end_position-start_position)*duration - duration.powi(2)/2.0*(start_velocity+end_velocity);
-        let plus_or_minus_term = (b.powi(2) - 4.0*a*c).sqrt();
-        let knot_minus = (-b - plus_or_minus_term)/(2.0*a);
-        let knot_plus = (-b + plus_or_minus_term)/(2.0*a);
-        let knot_minus_valid = knot_minus >= 0.0 && knot_minus <= duration;
-        let knot_plus_valid = knot_plus >= 0.0 && knot_plus <= duration;
-        assert_ne!(knot_minus_valid, knot_plus_valid);
-        knot = if knot_minus_valid {knot_minus} else {knot_plus};
-        acceleration = (end_velocity - start_velocity)/(2.0*knot - duration);
-    }
-    let knot_velocity = start_velocity + knot*acceleration;
-    let knot_position = start_position + start_velocity*knot + acceleration/2.0*knot*knot;
-    let first_parabola = Cubic{coefficients: [start_position, start_velocity, acceleration/2.0, 0.0]};
-    let second_parabola = Cubic{coefficients: [knot_position, knot_velocity, -acceleration/2.0, 0.0]};
-    (CubicTrajectorySegment{cubic: first_parabola, end_time: Duration::from_secs_f64(knot)}, CubicTrajectorySegment{cubic: second_parabola, end_time: Duration::from_secs_f64(duration - knot)})
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    const FLAT_CUBIC: Cubic = Cubic{coefficients: [0.0,0.0,0.0,0.0]};
-    #[test]
-    fn test_segment_index() {
-        let cubic_trajectory: CubicTrajectory = vec![
-            CubicTrajectorySegment{cubic: FLAT_CUBIC, end_time: Duration::from_secs(1)},
-            CubicTrajectorySegment{cubic: FLAT_CUBIC, end_time: Duration::from_secs(2)},
-            CubicTrajectorySegment{cubic: FLAT_CUBIC, end_time: Duration::from_secs(3)},
-            CubicTrajectorySegment{cubic: FLAT_CUBIC, end_time: Duration::from_secs(4)},
-        ];
-        assert_eq!(cubic_trajectory.segment_index(Duration::from_secs_f64(0.5)), 0);
-        assert_eq!(cubic_trajectory.segment_index(Duration::from_secs_f64(1.5)), 1);
-        assert_eq!(cubic_trajectory.segment_index(Duration::from_secs_f64(3.5)), 3);
-    }
 
     #[test]
     fn test_two_parabolas() {
         // 0,0 1,0 1
-        let (first_segment, second_segment) = two_parabolas_given_positions_and_velocities(0.0, 1.0, 0.0, 0.0, Duration::from_secs_f64(1.0));
-        assert_eq!(first_segment.end_time, Duration::from_secs_f64(0.5));
-        assert_eq!(first_segment.cubic.coefficients, [0.0, 0.0, 2.0, 0.0]);
-        assert_eq!(second_segment.end_time, Duration::from_secs_f64(0.5));
-        assert_eq!(second_segment.cubic.coefficients, [0.5, 2.0, -2.0, 0.0]);
+        let two_parabolas_segment = TwoParabolasSegment::from_positions_and_velocities(0.0, 1.0, 0.0, 0.0, Duration::from_secs_f64(1.0));
+        assert_eq!(two_parabolas_segment.inflection_time, Duration::from_secs_f64(0.5));
+        assert_eq!(two_parabolas_segment.first_parabola.coefficients, [0.0, 0.0, 2.0]);
+        assert_eq!(two_parabolas_segment.second_parabola.coefficients, [0.5, 2.0, -2.0]);
 
         // 0,0 1,1 1
-        let (first_segment, second_segment) = two_parabolas_given_positions_and_velocities(0.0, 1.0, 0.0, 1.0, Duration::from_secs_f64(1.0));
-        assert_abs_diff_eq!(first_segment.cubic.interpolate(&Duration::ZERO), 0.0, epsilon = 1e-5);
-        assert_abs_diff_eq!(first_segment.cubic.derivative().interpolate(&Duration::ZERO), 0.0, epsilon = 1e-5);
-        assert_abs_diff_eq!(second_segment.cubic.interpolate(&second_segment.end_time), 1.0, epsilon = 1e-5);
-        assert_abs_diff_eq!(second_segment.cubic.derivative().interpolate(&second_segment.end_time), 1.0, epsilon = 1e-5);
-        assert_abs_diff_eq!(first_segment.cubic.interpolate(&first_segment.end_time), second_segment.cubic.interpolate(&Duration::ZERO), epsilon = 1e-5);
-        assert_abs_diff_eq!(first_segment.cubic.derivative().interpolate(&first_segment.end_time), second_segment.cubic.derivative().interpolate(&Duration::ZERO), epsilon = 1e-5);
-        println!("The derived parabolas are {:?} until {:?} and {:?} till 1", first_segment.cubic, first_segment.end_time, second_segment.cubic);
+        let one_second = Duration::from_secs(1);
+        let two_parabolas_segment: TwoParabolasSegment = TwoParabolasSegment::from_positions_and_velocities(0.0, 1.0, 0.0, 1.0, one_second);
+        assert_abs_diff_eq!(two_parabolas_segment.interpolate(Duration::ZERO), 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(two_parabolas_segment.first_parabola.derivative().interpolate(Duration::ZERO), 0.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(two_parabolas_segment.interpolate(one_second), 1.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(two_parabolas_segment.second_parabola.derivative().interpolate(one_second-two_parabolas_segment.inflection_time), 1.0, epsilon = 1e-5);
+        assert_abs_diff_eq!(two_parabolas_segment.first_parabola.interpolate(two_parabolas_segment.inflection_time), two_parabolas_segment.second_parabola.interpolate(Duration::ZERO), epsilon = 1e-5);
+        assert_abs_diff_eq!(two_parabolas_segment.first_parabola.derivative().interpolate(two_parabolas_segment.inflection_time), two_parabolas_segment.second_parabola.derivative().interpolate(Duration::ZERO), epsilon = 1e-5);
+    }
+
+    #[test]
+    fn test_times_from_distances() {
+        let joint_position_zero = JointPosition([0.0;ARM_DEGREES_OF_FREEDOM]);
+        let joint_position_half = JointPosition([0.5,0.0,0.0,0.0,0.0]);
+        let joint_position_one = JointPosition([1.0,0.0,0.0,0.0,0.0]);
+        let times = relative_times_from_position_list(&vec![joint_position_zero, joint_position_half, joint_position_one]);
+        assert_eq!(times[0], 0.0);
+        assert_eq!(times[1], times[2]/2.0);
+
+        let positions: Vec<JointPosition> = (0..10).map(|index| JointPosition([index as f64, 0.0, 0.0, 0.0, 0.0])).collect();
+        let times = relative_times_from_position_list(&positions);
+        assert_eq!(times[0], 0.0);
+        for index in 0..9 {
+            assert!(times[index] < times[index+1], "times are out of order at indices {index} and {}", index+1);
+        }
+        assert_abs_diff_eq!(times[6]-times[5], 1.0/COMBINED_VELOCITY, epsilon=1e-5);
     }
 }
