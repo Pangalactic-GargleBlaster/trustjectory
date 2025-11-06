@@ -1,10 +1,10 @@
-use futures::{executor::{LocalPool}, task::{LocalSpawnExt}};
+use futures::{executor::{block_on, LocalPool}, task::LocalSpawnExt};
 use gamepad::*;
 use r2r::{std_msgs::msg::Header, trajectory_msgs::msg::JointTrajectory, Publisher, QosProfile};
-use std::{f64, time::{Duration, Instant}, vec};
+use std::{f64, path::{Path, PathBuf}, time::{Duration, Instant}, vec};
 use r2r::trajectory_msgs::msg::JointTrajectoryPoint;
 mod trajectories;
-use crate::trajectories::{high_jerk_trajectory, write_position_list_to_file, JointPosition, ParametricTrajectory, PointTrajectory, PointTrajectoryExt, ParametricTrajectoryExt, TrajectoryPoint, HOME_POSITION, MAX_ANGLES, MIN_ANGLES};
+use crate::trajectories::{high_jerk_trajectory, JointPosition, ParametricTrajectory, PointTrajectory, PointTrajectoryExt, ParametricTrajectoryExt, TrajectoryPoint, HOME_POSITION, MAX_ANGLES, MIN_ANGLES};
 
 const QOS_PROFILE: QosProfile = QosProfile::sensor_data().reliable().keep_last(1);
 const ROS_SAMPLING_PERIOD: Duration = Duration::from_millis(16);
@@ -13,12 +13,30 @@ pub fn main() {
     let ctx = r2r::Context::create().expect("Couldn't initialize ros");
     let mut node = r2r::Node::create(ctx, "teach_pendant", "trustjectory").expect("Couldn't create the ros node");
     let publisher: Publisher<JointTrajectory> = node.create_publisher::<JointTrajectory>("/robot_commands", QOS_PROFILE).expect("Failed to create a publisher for the robot commands topic");
-    println!("Created publisher and subscriber");
+    println!("Created publisher");
 
     let mut pool = LocalPool::new();
     let spawner = pool.spawner();
     spawner.spawn_local(async move {
         publisher.wait_for_inter_process_subscribers().expect("error before awaiting").await.expect("error in waiting for subscribers");
+        println!("connected to subscriber");
+        if std::env::args().collect::<Vec<String>>().contains(&"hardcoded_trajectory".to_string()) {
+            let point_list = vec![
+                JointPosition(HOME_POSITION.0),
+                JointPosition([1.0,0.0,0.0,0.0,0.5]),
+                JointPosition([0.0,0.0,-1.0,0.0,0.5]),
+                JointPosition([-1.0,0.0,0.0,0.0,0.5]),
+                JointPosition([0.0,0.0,1.0,0.0,0.5]),
+                JointPosition([1.0,0.0,0.0,0.0,0.5]),
+                JointPosition([0.0,0.0,-1.0,0.0,0.5]),
+                JointPosition([-1.0,0.0,0.0,0.0,0.5]),
+                JointPosition([0.0,0.0,1.0,0.0,0.5]),
+            ];
+            let point_trajectory: PointTrajectory = PointTrajectory::from_parametric_trajectory(&ParametricTrajectory::from_position_list(&point_list));
+            point_trajectory.save_to_file(&PathBuf::from("trajectories").join("hardcoded_trajectory.json"));
+            publisher.send_trajectory_to_qarm(&point_trajectory);
+            return;
+        }
         if std::env::args().collect::<Vec<String>>().contains(&"jerk_test".to_string()) {
             println!("Running high jerk test");
             publisher.send_trajectory_to_qarm(&high_jerk_trajectory(Duration::from_secs(60)));
@@ -65,9 +83,11 @@ async fn teach_pendant(publisher: Publisher<JointTrajectory>) {
                 current_position_list.push(robot_command);
             }
             if gamepad.is_just_pressed(Button::East) {
-                write_position_list_to_file(&current_position_list, &("trajectory".to_string()+&trajectory_counter.to_string()));
+                let file_path: PathBuf = PathBuf::from("trajectories").join(format!("trajectory{trajectory_counter}.json"));
                 trajectory_counter += 1;
-                let return_home_trajectory: PointTrajectory = PointTrajectory::from_parametric_trajectory(&ParametricTrajectory::from_position_list(&current_position_list)).inverted();
+                let point_trajectory: PointTrajectory = PointTrajectory::from_parametric_trajectory(&ParametricTrajectory::from_position_list(&current_position_list));
+                point_trajectory.save_to_file(&file_path);
+                let return_home_trajectory: PointTrajectory = point_trajectory.inverted();
                 publisher.send_trajectory_to_qarm(&return_home_trajectory);
                 let duration = return_home_trajectory.last().unwrap().time_from_start;
                 println!("Returning home in {} seconds", duration.as_secs_f64());

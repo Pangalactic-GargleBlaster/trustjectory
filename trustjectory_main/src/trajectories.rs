@@ -1,7 +1,7 @@
 use core::{f64};
 use std::mem::{self};
 use std::{fs::File, path::Path, time::Duration};
-use std::io::Write;
+use std::io::{Read, Write};
 use vector_algebra_macro::VectorAlgebra;
 use approx::assert_abs_diff_eq;
 
@@ -21,15 +21,17 @@ pub const MIN_ANGLES: [f64; ARM_DEGREES_OF_FREEDOM] = [
     -160.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
     0.1
 ];
-const MAX_VELOCITIES: [f64; ARM_DEGREES_OF_FREEDOM] = [f64::consts::PI/2.0, f64::consts::PI/2.0, f64::consts::PI/2.0, f64::consts::PI/2.0, 1.0];
-const COMBINED_VELOCITY: f64 = f64::consts::PI/2.0;
+const JOINT_MAX_VELOCITY: f64 = 0.333;
+const MAX_VELOCITIES: [f64; ARM_DEGREES_OF_FREEDOM] = [JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, 0.25];
+const COMBINED_VELOCITY: f64 = JOINT_MAX_VELOCITY;
 const JOINT_DISTANCE_WEIGHTS: [f64; ARM_DEGREES_OF_FREEDOM] = [1.0, 1.0, 1.0, 1.0, 2.0/f64::consts::PI];
-const MAX_ACCELERATIONS: [f64; ARM_DEGREES_OF_FREEDOM] = [f64::consts::PI/3.0, f64::consts::PI/3.0, f64::consts::PI/3.0, f64::consts::PI/3.0, 4.0];
-const COMBINED_ACCELERATION: f64 = f64::consts::PI/3.0;
+const JOINT_MAX_ACCELERATION: f64 = 1.0;
+const MAX_ACCELERATIONS: [f64; ARM_DEGREES_OF_FREEDOM] = [JOINT_MAX_ACCELERATION, JOINT_MAX_ACCELERATION, JOINT_MAX_ACCELERATION, JOINT_MAX_ACCELERATION, 1.0];
+const COMBINED_ACCELERATION: f64 = JOINT_MAX_ACCELERATION;
 const BASIC_TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_secs(3);
 const TRAJECTORY_SAMPLING_PERIOD: Duration = Duration::from_millis(10);
 
-#[derive(Copy, Clone, Debug, serde::Serialize, VectorAlgebra)]
+#[derive(Copy, Clone, Debug, serde::Serialize, serde::Deserialize, VectorAlgebra)]
 pub struct JointPosition(pub [f64;ARM_DEGREES_OF_FREEDOM]);
 
 #[derive(Copy, Clone, VectorAlgebra)]
@@ -52,7 +54,7 @@ impl From<JointPosition> for JointVelocity {
 }
 
 pub const HOME_POSITION:JointPosition = JointPosition([0.0, 0.0, 0.0, 0.0, 0.5]);
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct TrajectoryPoint {
     pub joint_position: JointPosition,
     pub time_from_start: Duration,
@@ -61,6 +63,8 @@ pub type PointTrajectory = Vec<TrajectoryPoint>;
 pub trait PointTrajectoryExt {
     fn inverted(&self) -> Self;
     fn from_parametric_trajectory(parametric_trajectory: &ParametricTrajectory) -> Self;
+    fn save_to_file(&self, file_path: &Path);
+    fn load_from_file(file_path: &Path) -> Self;
 }
 
 impl PointTrajectoryExt for PointTrajectory{
@@ -86,16 +90,26 @@ impl PointTrajectoryExt for PointTrajectory{
         let mut time_so_far: Duration = Duration::ZERO;
         let mut segment_local_time: Duration = Duration::ZERO;
         let mut segment_index = 0;
-        while segment_index < parametric_trajectory.len() || segment_local_time <= parametric_trajectory[segment_index].duration {
+        while segment_index < parametric_trajectory.len() {
             point_trajectory.push(TrajectoryPoint { joint_position: parametric_trajectory[segment_index].interpolate(segment_local_time), time_from_start: time_so_far });
             time_so_far += TRAJECTORY_SAMPLING_PERIOD;
             segment_local_time += TRAJECTORY_SAMPLING_PERIOD;
-            while segment_local_time > parametric_trajectory[segment_index].duration {
+            while segment_index < parametric_trajectory.len() && segment_local_time > parametric_trajectory[segment_index].duration {
                 segment_local_time -= parametric_trajectory[segment_index].duration;
                 segment_index += 1;
             }
         }
         return point_trajectory;
+    }
+
+    fn save_to_file(&self, file_path: &Path) {
+        File::create(&file_path).expect("The file doesn't exist").write_all(serde_json::to_string_pretty(self).expect("Couldn't serialize trajectory").as_bytes()).expect("Couldn't write to file");
+    }
+
+    fn load_from_file(file_path: &Path) -> Self {
+        let mut file_content: String = String::new();
+        File::open(&file_path).expect("The file doesn't exist").read_to_string(&mut file_content).expect("Corrupted file contents");
+        return serde_json::from_str(&file_content).expect("Unable to parse trajectory");
     }
 }
 
@@ -146,13 +160,6 @@ pub fn high_jerk_trajectory(duration: Duration) -> PointTrajectory {
         });
     }
     return trajectory;
-}
-
-pub fn write_position_list_to_file(trajectory: &Vec<JointPosition>, file_name: &str) {
-    println!("Writing trajectory to file");
-    let json_string = serde_json::to_string_pretty(trajectory).expect("Failed to serialize a trajectory");
-    let mut file = File::create(Path::new(&("trajectories/".to_string()+file_name))).expect("Failed to create the trajectory file");
-    _ = file.write_all(json_string.as_bytes());
 }
 
 #[derive(Copy, Clone, Default)]

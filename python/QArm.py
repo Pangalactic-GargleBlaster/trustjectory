@@ -7,18 +7,6 @@ import numpy as np
 from Quanser.p_QArm import QArm
 import time
 
-arm = QArm()
-home_pose = np.array([0,0,0,0,0.5])
-armLED = np.array([0,1,0], dtype=np.float64) # initialize at home position, green LED
-def send_command_to_arm(joint_position: np.array):
-    arm.read_write_std(
-        phiCMD=joint_position[0:4],
-        grpCMD=joint_position[4:5],
-        baseLED=armLED
-    )
-send_command_to_arm(home_pose)
-armLED = np.array([0,0,1],dtype=np.float64) # from the first command onwards keep LED blue
-
 rclpy.init()
 node = Node("QArm")
 qos_profile = QoSProfile(**{
@@ -26,21 +14,35 @@ qos_profile = QoSProfile(**{
     'durability': QoSDurabilityPolicy.VOLATILE,
     'depth': 1,
 })
-publisher = node.create_publisher(JointTrajectoryPoint, '/robot_state', qos_profile)
+state_publisher = node.create_publisher(JointTrajectoryPoint, '/robot_state', qos_profile)
+desired_state_publisher = node.create_publisher(JointTrajectoryPoint, '/robot_desired_state', qos_profile)
 print("Created the publisher")
+
+arm = QArm()
+home_pose = np.array([0,0,0,0,0.5])
+armLED = np.array([0,1,0], dtype=np.float64) # initialize at home position, green LED
+def send_command_to_arm(joint_position: np.ndarray):
+    arm.read_write_std(
+        phiCMD=joint_position[0:4],
+        grpCMD=joint_position[4:5],
+        baseLED=armLED
+    )
+    desired_state_publisher.publish(JointTrajectoryPoint(**{'positions': joint_position}))
+send_command_to_arm(home_pose)
+armLED = np.array([0,0,1],dtype=np.float64) # from the first command onwards keep LED blue
+
 def publish_arm_state():
     arm.read_std()
     ros_message = JointTrajectoryPoint(**{
         'positions': arm.measJointPosition,
     })
-    publisher.publish(ros_message)
+    state_publisher.publish(ros_message)
 node.create_timer(0.016, publish_arm_state)
 
 def duration_in_seconds(ros_duration: Duration) -> float:
     return ros_duration.sec + ros_duration.nanosec/1000000000
 
 def lerp(a,b,t):
-    print(f"lerp: {a*(1-t)+b*t}")
     return a*(1-t)+b*t
 
 def run_trajectory(joint_trajectory: JointTrajectory):
