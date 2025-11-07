@@ -34,6 +34,7 @@ pub fn main() {
             ];
             let point_trajectory: PointTrajectory = PointTrajectory::from_parametric_trajectory(&ParametricTrajectory::from_position_list(&point_list));
             point_trajectory.save_to_file(&PathBuf::from("trajectories").join("hardcoded_trajectory.json"));
+            point_trajectory.plot_joint_trajectories(&PathBuf::from("trajectories").join("hardcoded_trajectory.png"));
             publisher.send_trajectory_to_qarm(&point_trajectory);
             return;
         }
@@ -42,7 +43,7 @@ pub fn main() {
             publisher.send_trajectory_to_qarm(&high_jerk_trajectory(Duration::from_secs(60)));
         }
         println!("Teach pendant ready!");
-        teach_pendant(publisher).await
+        teach_pendant(publisher);
     }).expect("Failed to spawn a task");
     
     let mut middleware_heartbeat_counter: u32 = 0;
@@ -56,7 +57,7 @@ pub fn main() {
     }
 }
 
-async fn teach_pendant(publisher: Publisher<JointTrajectory>) {
+fn teach_pendant(publisher: Publisher<JointTrajectory>) {
     let mut gamepad_engine = GamepadEngine::new();
     let mut loop_heartbeat_counter: u32 = 0;
     let mut trajectory_counter: u32 = 1;
@@ -83,10 +84,12 @@ async fn teach_pendant(publisher: Publisher<JointTrajectory>) {
                 current_position_list.push(robot_command);
             }
             if gamepad.is_just_pressed(Button::East) {
-                let file_path: PathBuf = PathBuf::from("trajectories").join(format!("trajectory{trajectory_counter}.json"));
+                let trajectory_file_path: PathBuf = PathBuf::from("trajectories").join(format!("trajectory{trajectory_counter}.json"));
+                let trajectory_graph_path: PathBuf = PathBuf::from("trajectories").join(format!("trajectory{trajectory_counter}.png"));
                 trajectory_counter += 1;
                 let point_trajectory: PointTrajectory = PointTrajectory::from_parametric_trajectory(&ParametricTrajectory::from_position_list(&current_position_list));
-                point_trajectory.save_to_file(&file_path);
+                point_trajectory.save_to_file(&trajectory_file_path);
+                point_trajectory.plot_joint_trajectories(&trajectory_graph_path);
                 let return_home_trajectory: PointTrajectory = point_trajectory.inverted();
                 publisher.send_trajectory_to_qarm(&return_home_trajectory);
                 let duration = return_home_trajectory.last().unwrap().time_from_start;
