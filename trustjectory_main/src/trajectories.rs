@@ -3,7 +3,7 @@ use std::mem::{self};
 use std::{fs::File, path::Path, time::Duration};
 use std::io::{Read, Write};
 use vector_algebra_macro::VectorAlgebra;
-use approx::assert_abs_diff_eq;
+use plotters::prelude::*;
 
 pub const ARM_DEGREES_OF_FREEDOM: usize = 5;
 const DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR: f64 = f64::consts::PI/180.0;
@@ -65,6 +65,7 @@ pub trait PointTrajectoryExt {
     fn from_parametric_trajectory(parametric_trajectory: &ParametricTrajectory) -> Self;
     fn save_to_file(&self, file_path: &Path);
     fn load_from_file(file_path: &Path) -> Self;
+    fn plot_joint_trajectories(&self, file_name: &Path);
 }
 
 impl PointTrajectoryExt for PointTrajectory{
@@ -111,6 +112,59 @@ impl PointTrajectoryExt for PointTrajectory{
         File::open(&file_path).expect("The file doesn't exist").read_to_string(&mut file_content).expect("Corrupted file contents");
         return serde_json::from_str(&file_content).expect("Unable to parse trajectory");
     }
+
+    fn plot_joint_trajectories(&self, file_path: &Path) {
+        let root = BitMapBackend::new(file_path, (1024, 1024)).into_drawing_area();
+        root.fill(&WHITE).expect("Couldn't create the canvas");
+
+        // Split into vertically stacked subplots
+        let areas = root.split_evenly((ARM_DEGREES_OF_FREEDOM, 1));
+
+        // Compute x range (time)
+        let t_min = self[0].time_from_start.as_secs_f64();
+        let t_max = self.last().unwrap().time_from_start.as_secs_f64();
+
+        for (joint_index, area) in areas.iter().enumerate() {
+            let y_min = MIN_ANGLES[joint_index];
+            let y_max = MAX_ANGLES[joint_index];
+
+            let mut chart = ChartBuilder::on(area)
+                .margin(10)
+                .x_label_area_size(if joint_index == ARM_DEGREES_OF_FREEDOM - 1 { 40 } else { 10 })
+                .y_label_area_size(60)
+                .caption(format!("Joint {}", joint_index), ("sans-serif", 16))
+                .build_cartesian_2d(t_min..t_max, y_min..y_max).expect("Couldn't build joint chart");
+
+            chart.configure_mesh()
+                .x_labels(5)
+                .y_labels(5)
+                .x_desc(if joint_index == ARM_DEGREES_OF_FREEDOM - 1 { "Time (s)" } else { "" })
+                .y_desc("Position (rad)")
+                .draw().expect("Couldn't configure the labels");
+
+            // Draw trajectory curve
+            chart.draw_series(LineSeries::new(
+                self.iter().map(|p| {
+                    (p.time_from_start.as_secs_f64(), p.joint_position[joint_index])
+                }),
+                &BLUE,
+            )).expect("Couldn't draw the curve");
+
+            // Draw horizontal red lines for limits
+            chart.draw_series(std::iter::once(PathElement::new(
+                vec![(t_min, y_min), (t_max, y_min)],
+                &RED,
+            ))).expect("Couldn't draw lower bound");
+            chart.draw_series(std::iter::once(PathElement::new(
+                vec![(t_min, y_max), (t_max, y_max)],
+                &RED,
+            ))).expect("Couldn't draw upper bound");
+        }
+
+        root.present().expect("Couldn't render the image");
+        println!("Saved to {file_path:?}");
+    }
+
 }
 
 pub fn equally_spaced_trajectory(points: &Vec<JointPosition>) -> PointTrajectory {
@@ -254,12 +308,12 @@ impl TrajectorySegment {
         duration: Duration,
     ) -> Self {
         let joint_trajectories =
-            std::array::from_fn(|i: usize| {
+            std::array::from_fn(|joint_index: usize| {
                 TwoParabolasSegment::from_positions_and_velocities(
-                    start_position[i],
-                    end_position[i],
-                    start_velocity[i],
-                    end_velocity[i],
+                    start_position[joint_index],
+                    end_position[joint_index],
+                    start_velocity[joint_index],
+                    end_velocity[joint_index],
                     duration,
                 )
             });
@@ -352,6 +406,7 @@ fn relative_times_from_position_list(points: &Vec<JointPosition>) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_abs_diff_eq;
 
     #[test]
     fn test_two_parabolas() {
