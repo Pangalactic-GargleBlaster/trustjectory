@@ -233,6 +233,30 @@ pub fn derive_vector_algebra(input: TokenStream) -> TokenStream {
                 &self * rhs
             }
         }
+
+        impl<#impl_generics> core::ops::Div<#elem_ty_tokens> for & #name #ty_generics
+        #where_tokens
+        {
+            type Output = #name #ty_generics;
+
+            fn div(self, rhs: #elem_ty_tokens) -> Self::Output {
+                let mut out = self.0;
+                for i in 0..#len_expr {
+                    out[i] = self.0[i] / rhs;
+                }
+                #name(out)
+            }
+        }
+
+        impl<#impl_generics> core::ops::Div<#elem_ty_tokens> for #name #ty_generics
+        #where_tokens
+        {
+            type Output = #name #ty_generics;
+
+            fn div(self, rhs: #elem_ty_tokens) -> Self::Output {
+                &self / rhs
+            }
+        }
     };
 
     TokenStream::from(expanded)

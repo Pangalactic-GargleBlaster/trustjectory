@@ -62,10 +62,12 @@ pub struct TrajectoryPoint {
 pub type PointTrajectory = Vec<TrajectoryPoint>;
 pub trait PointTrajectoryExt {
     fn inverted(&self) -> Self;
+    fn derivative(&self) -> Self;
     fn from_parametric_trajectory(parametric_trajectory: &ParametricTrajectory) -> Self;
     fn save_to_file(&self, file_path: &Path);
     fn load_from_file(file_path: &Path) -> Self;
-    fn plot_joint_trajectories(&self, file_name: &Path);
+    fn plot_positions_velocities_and_accelerations(&self, folder_path: &Path);
+    fn plot_joint_trajectories(&self, file_name: &Path, limits: [f64; ARM_DEGREES_OF_FREEDOM]);
 }
 
 impl PointTrajectoryExt for PointTrajectory{
@@ -84,6 +86,29 @@ impl PointTrajectoryExt for PointTrajectory{
                 return inverted_trajectory;
             }
         }
+    }
+
+    fn derivative(&self) -> Self {
+        let mut derivative: PointTrajectory = PointTrajectory::new();
+        derivative.push(TrajectoryPoint{
+            joint_position: (self[1].joint_position - self[0].joint_position)/self[1].time_from_start.as_secs_f64(),
+            time_from_start: self[0].time_from_start
+        });
+        for index in 1..self.len()-1 {
+            let i_to_i_plus_1_time = (self[index+1].time_from_start-self[index].time_from_start).as_secs_f64();
+            let i_minus_1_to_i_time = (self[index].time_from_start-self[index-1].time_from_start).as_secs_f64();
+            let i_to_i_plus_1_derivative = (self[index+1].joint_position-self[index].joint_position)/i_to_i_plus_1_time;
+            let i_minus_1_to_i_derivative = (self[index].joint_position-self[index-1].joint_position)/i_minus_1_to_i_time;
+            derivative.push(TrajectoryPoint{
+                joint_position: (i_to_i_plus_1_derivative*i_to_i_plus_1_time + i_minus_1_to_i_derivative*i_minus_1_to_i_time)/(i_to_i_plus_1_time+i_minus_1_to_i_time),
+                time_from_start: self[index].time_from_start
+            });
+        }
+        derivative.push(TrajectoryPoint{
+            joint_position: (self.last().unwrap().joint_position - self[self.len()-2].joint_position)/(self.last().unwrap().time_from_start - self[self.len()-2].time_from_start).as_secs_f64(),
+            time_from_start: self.last().unwrap().time_from_start
+        });
+        return derivative;
     }
 
     fn from_parametric_trajectory(parametric_trajectory: &ParametricTrajectory) -> Self {
@@ -113,7 +138,15 @@ impl PointTrajectoryExt for PointTrajectory{
         return serde_json::from_str(&file_content).expect("Unable to parse trajectory");
     }
 
-    fn plot_joint_trajectories(&self, file_path: &Path) {
+    fn plot_positions_velocities_and_accelerations(&self, folder_path: &Path) {
+        self.plot_joint_trajectories(&folder_path.join("positions.png"), MAX_ANGLES);
+        let velocity_trajectory = self.derivative();
+        velocity_trajectory.plot_joint_trajectories(&folder_path.join("velocities.png"), MAX_VELOCITIES);
+        let acceleration_trajectory = velocity_trajectory.derivative();
+        acceleration_trajectory.plot_joint_trajectories(&folder_path.join("accelerations.png"), MAX_ACCELERATIONS);
+    }
+
+    fn plot_joint_trajectories(&self, file_path: &Path, limits: [f64; ARM_DEGREES_OF_FREEDOM]) {
         let root = BitMapBackend::new(file_path, (1024, 1024)).into_drawing_area();
         root.fill(&WHITE).expect("Couldn't create the canvas");
 
@@ -125,20 +158,20 @@ impl PointTrajectoryExt for PointTrajectory{
         let t_max = self.last().unwrap().time_from_start.as_secs_f64();
 
         for (joint_index, area) in areas.iter().enumerate() {
-            let y_min = MIN_ANGLES[joint_index];
-            let y_max = MAX_ANGLES[joint_index];
+            let y_min = limits[joint_index];
+            let y_max = -limits[joint_index];
 
             let mut chart = ChartBuilder::on(area)
                 .margin(10)
-                .x_label_area_size(if joint_index == ARM_DEGREES_OF_FREEDOM - 1 { 40 } else { 10 })
+                .x_label_area_size(40)
                 .y_label_area_size(60)
                 .caption(format!("Joint {}", joint_index), ("sans-serif", 16))
-                .build_cartesian_2d(t_min..t_max, y_min..y_max).expect("Couldn't build joint chart");
+                .build_cartesian_2d(t_min..t_max, 1.5*y_min..1.5*y_max).expect("Couldn't build joint chart");
 
             chart.configure_mesh()
                 .x_labels(5)
                 .y_labels(5)
-                .x_desc(if joint_index == ARM_DEGREES_OF_FREEDOM - 1 { "Time (s)" } else { "" })
+                .x_desc("Time (s)")
                 .y_desc("Position (rad)")
                 .draw().expect("Couldn't configure the labels");
 

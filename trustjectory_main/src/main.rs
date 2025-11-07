@@ -1,7 +1,7 @@
 use futures::{executor::{block_on, LocalPool}, task::LocalSpawnExt};
 use gamepad::*;
 use r2r::{std_msgs::msg::Header, trajectory_msgs::msg::JointTrajectory, Publisher, QosProfile};
-use std::{f64, path::{Path, PathBuf}, time::{Duration, Instant}, vec};
+use std::{f64, fs, fs::File, path::{Path, PathBuf}, time::{Duration, Instant}, vec};
 use r2r::trajectory_msgs::msg::JointTrajectoryPoint;
 mod trajectories;
 use crate::trajectories::{high_jerk_trajectory, JointPosition, ParametricTrajectory, PointTrajectory, PointTrajectoryExt, ParametricTrajectoryExt, TrajectoryPoint, HOME_POSITION, MAX_ANGLES, MIN_ANGLES};
@@ -33,8 +33,7 @@ pub fn main() {
                 JointPosition([0.0,0.0,1.0,0.0,0.5]),
             ];
             let point_trajectory: PointTrajectory = PointTrajectory::from_parametric_trajectory(&ParametricTrajectory::from_position_list(&point_list));
-            point_trajectory.save_to_file(&PathBuf::from("trajectories").join("hardcoded_trajectory.json"));
-            point_trajectory.plot_joint_trajectories(&PathBuf::from("trajectories").join("hardcoded_trajectory.png"));
+            save_trajectory(&point_trajectory, &PathBuf::from("trajectories").join("hardcoded_trajectory"));
             publisher.send_trajectory_to_qarm(&point_trajectory);
             return;
         }
@@ -46,14 +45,9 @@ pub fn main() {
         teach_pendant(publisher);
     }).expect("Failed to spawn a task");
     
-    let mut middleware_heartbeat_counter: u32 = 0;
     loop {
         node.spin_once(ROS_SAMPLING_PERIOD);
         pool.run_until_stalled();
-        middleware_heartbeat_counter += 1;
-        if middleware_heartbeat_counter % 1024 == 0 {
-            println!("Still running ROS middleware");
-        }
     }
 }
 
@@ -84,12 +78,10 @@ fn teach_pendant(publisher: Publisher<JointTrajectory>) {
                 current_position_list.push(robot_command);
             }
             if gamepad.is_just_pressed(Button::East) {
-                let trajectory_file_path: PathBuf = PathBuf::from("trajectories").join(format!("trajectory{trajectory_counter}.json"));
-                let trajectory_graph_path: PathBuf = PathBuf::from("trajectories").join(format!("trajectory{trajectory_counter}.png"));
+                let folder_path: PathBuf = PathBuf::from("trajectories").join(format!("trajectory{trajectory_counter}"));
                 trajectory_counter += 1;
                 let point_trajectory: PointTrajectory = PointTrajectory::from_parametric_trajectory(&ParametricTrajectory::from_position_list(&current_position_list));
-                point_trajectory.save_to_file(&trajectory_file_path);
-                point_trajectory.plot_joint_trajectories(&trajectory_graph_path);
+                save_trajectory(&point_trajectory, &folder_path);
                 let return_home_trajectory: PointTrajectory = point_trajectory.inverted();
                 publisher.send_trajectory_to_qarm(&return_home_trajectory);
                 let duration = return_home_trajectory.last().unwrap().time_from_start;
@@ -106,6 +98,12 @@ fn teach_pendant(publisher: Publisher<JointTrajectory>) {
         }
         last_iteration = Instant::now();
     }
+}
+
+fn save_trajectory(trajectory: &PointTrajectory, folder_path: &Path) {
+    fs::create_dir_all(folder_path);
+    trajectory.save_to_file(&folder_path.join("trajectory.json"));
+    trajectory.plot_positions_velocities_and_accelerations(&folder_path);
 }
 
 trait MoveQarm {
