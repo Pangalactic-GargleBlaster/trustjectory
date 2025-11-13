@@ -1,7 +1,7 @@
 use futures::{executor::{block_on, LocalPool}, task::LocalSpawnExt};
 use gamepad::*;
 use r2r::{std_msgs::msg::Header, trajectory_msgs::msg::JointTrajectory, Publisher, QosProfile};
-use std::{f64, fs, fs::File, path::{Path, PathBuf}, time::{Duration, Instant}, vec};
+use std::{cell::Cell, f64, fs::{self, File}, path::{Path, PathBuf}, process::exit, rc::Rc, time::{Duration, Instant}, vec};
 use r2r::trajectory_msgs::msg::JointTrajectoryPoint;
 mod trajectories;
 use crate::trajectories::{high_jerk_trajectory, JointPosition, ParametricTrajectory, PointTrajectory, PointTrajectoryExt, ParametricTrajectoryExt, TrajectoryPoint, HOME_POSITION, MAX_ANGLES, MIN_ANGLES};
@@ -35,7 +35,8 @@ pub fn main() {
             let point_trajectory: PointTrajectory = PointTrajectory::from_parametric_trajectory(&ParametricTrajectory::from_position_list(&point_list));
             save_trajectory(&point_trajectory, &PathBuf::from("trajectories").join("hardcoded_trajectory"));
             publisher.send_trajectory_to_qarm(&point_trajectory);
-            return;
+            std::thread::sleep(Duration::from_secs(1));
+            exit(0);
         }
         if std::env::args().collect::<Vec<String>>().contains(&"jerk_test".to_string()) {
             println!("Running high jerk test");
@@ -46,8 +47,8 @@ pub fn main() {
     }).expect("Failed to spawn a task");
     
     loop {
-        node.spin_once(ROS_SAMPLING_PERIOD);
         pool.run_until_stalled();
+        node.spin_once(ROS_SAMPLING_PERIOD);
     }
 }
 

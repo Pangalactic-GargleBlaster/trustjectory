@@ -21,7 +21,7 @@ pub const MIN_ANGLES: [f64; ARM_DEGREES_OF_FREEDOM] = [
     -160.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
     0.1
 ];
-const JOINT_MAX_VELOCITY: f64 = 0.333;
+const JOINT_MAX_VELOCITY: f64 = 0.5;
 const MAX_VELOCITIES: [f64; ARM_DEGREES_OF_FREEDOM] = [JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, 0.25];
 const COMBINED_VELOCITY: f64 = JOINT_MAX_VELOCITY;
 const JOINT_DISTANCE_WEIGHTS: [f64; ARM_DEGREES_OF_FREEDOM] = [1.0, 1.0, 1.0, 1.0, 2.0/f64::consts::PI];
@@ -158,8 +158,8 @@ impl PointTrajectoryExt for PointTrajectory{
         let t_max = self.last().unwrap().time_from_start.as_secs_f64();
 
         for (joint_index, area) in areas.iter().enumerate() {
-            let y_min = limits[joint_index];
-            let y_max = -limits[joint_index];
+            let y_min = -limits[joint_index];
+            let y_max = limits[joint_index];
 
             let mut chart = ChartBuilder::on(area)
                 .margin(10)
@@ -364,6 +364,7 @@ pub trait ParametricTrajectoryExt {
 impl ParametricTrajectoryExt for ParametricTrajectory {
     fn from_position_list(points: &Vec<JointPosition>) -> Self {
         let times_from_start = relative_times_from_position_list(points);
+        println!("The times at which we'll cross the points are {times_from_start:?}");
         let mut velocities: Vec<JointVelocity> = Vec::with_capacity(points.len());
         velocities.push(JointVelocity([0.0;ARM_DEGREES_OF_FREEDOM]));
         for index in 1..points.len()-1 {
@@ -398,8 +399,10 @@ fn relative_times_from_position_list(points: &Vec<JointPosition>) -> Vec<f64> {
         cumulative_distances.push(total_so_far);
     }
     let total_distance = total_so_far;
+    println!("The cumulative distances of the points are {cumulative_distances:?}");
     let mut times: Vec<f64> = Vec::with_capacity(points.len());
     if total_distance <= MIN_SPEED_LIMITED_DISTANCE {
+        println!("Creating acceleration limited trajectory");
         let inflection_time = (total_distance/COMBINED_ACCELERATION).sqrt();
         let total_time = 2.0 * inflection_time;
         let mut index = 0;
@@ -413,6 +416,7 @@ fn relative_times_from_position_list(points: &Vec<JointPosition>) -> Vec<f64> {
             index += 1;
         }
     } else {
+        println!("Creating speed limited trajectory");
         let inflection_time = (MIN_SPEED_LIMITED_DISTANCE/COMBINED_ACCELERATION).sqrt();
         let linear_time = (total_distance - MIN_SPEED_LIMITED_DISTANCE) / COMBINED_VELOCITY;
         let total_time = 2.0*inflection_time + linear_time;
