@@ -32,8 +32,10 @@ pub fn main() {
                 JointPosition([-1.0,0.0,0.0,0.0,0.5]),
                 JointPosition([0.0,0.0,1.0,0.0,0.5]),
             ];
+            let computation_start_time = Instant::now();
             let point_trajectory: PointTrajectory = PointTrajectory::from_parametric_trajectory(&ParametricTrajectory::from_position_list(&point_list));
-            save_trajectory(&point_trajectory, &PathBuf::from("trajectories").join("hardcoded_trajectory"));
+            println!("Time taken to compute trajectory: {:?}", computation_start_time.elapsed());
+            save_trajectory(&point_trajectory, &PathBuf::from("trajectories").join("hardcoded_trajectory"), &point_list);
             publisher.send_trajectory_to_qarm(&point_trajectory);
             std::thread::sleep(Duration::from_secs(1));
             exit(0);
@@ -82,7 +84,7 @@ fn teach_pendant(publisher: Publisher<JointTrajectory>) {
                 let folder_path: PathBuf = PathBuf::from("trajectories").join(format!("trajectory{trajectory_counter}"));
                 trajectory_counter += 1;
                 let point_trajectory: PointTrajectory = PointTrajectory::from_parametric_trajectory(&ParametricTrajectory::from_position_list(&current_position_list));
-                save_trajectory(&point_trajectory, &folder_path);
+                save_trajectory(&point_trajectory, &folder_path, &current_position_list);
                 let return_home_trajectory: PointTrajectory = point_trajectory.inverted();
                 publisher.send_trajectory_to_qarm(&return_home_trajectory);
                 let duration = return_home_trajectory.last().unwrap().time_from_start;
@@ -101,10 +103,10 @@ fn teach_pendant(publisher: Publisher<JointTrajectory>) {
     }
 }
 
-fn save_trajectory(trajectory: &PointTrajectory, folder_path: &Path) {
+fn save_trajectory(trajectory: &PointTrajectory, folder_path: &Path, source_points: &Vec<JointPosition>) {
     fs::create_dir_all(folder_path);
     trajectory.save_to_file(&folder_path.join("trajectory.json"));
-    trajectory.plot_positions_velocities_and_accelerations(&folder_path);
+    trajectory.plot_positions_velocities_and_accelerations(folder_path, source_points);
 }
 
 trait MoveQarm {

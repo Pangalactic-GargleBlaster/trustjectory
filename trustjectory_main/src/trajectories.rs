@@ -53,6 +53,12 @@ impl From<JointPosition> for JointVelocity {
     }
 }
 
+impl From<JointVelocity> for JointPosition {
+    fn from(value: JointVelocity) -> Self {
+        JointPosition(value.0)
+    }
+}
+
 pub const HOME_POSITION:JointPosition = JointPosition([0.0, 0.0, 0.0, 0.0, 0.5]);
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct TrajectoryPoint {
@@ -66,8 +72,8 @@ pub trait PointTrajectoryExt {
     fn from_parametric_trajectory(parametric_trajectory: &ParametricTrajectory) -> Self;
     fn save_to_file(&self, file_path: &Path);
     fn load_from_file(file_path: &Path) -> Self;
-    fn plot_positions_velocities_and_accelerations(&self, folder_path: &Path);
-    fn plot_joint_trajectories(&self, file_name: &Path, limits: [f64; ARM_DEGREES_OF_FREEDOM]);
+    fn plot_positions_velocities_and_accelerations(&self, folder_path: &Path, source_points: &Vec<JointPosition>);
+    fn plot_joint_trajectories(&self, file_name: &Path, limits: [f64; ARM_DEGREES_OF_FREEDOM], source_points: Vec<TrajectoryPoint>);
 }
 
 impl PointTrajectoryExt for PointTrajectory{
@@ -138,15 +144,19 @@ impl PointTrajectoryExt for PointTrajectory{
         return serde_json::from_str(&file_content).expect("Unable to parse trajectory");
     }
 
-    fn plot_positions_velocities_and_accelerations(&self, folder_path: &Path) {
-        self.plot_joint_trajectories(&folder_path.join("positions.png"), MAX_ANGLES);
+    fn plot_positions_velocities_and_accelerations(&self, folder_path: &Path, source_points: &Vec<JointPosition>) {
+        let point_times = relative_times_from_position_list(source_points);
+        let source_trajectory_points: Vec<TrajectoryPoint> = point_times.iter().enumerate().map(|(index, time)| TrajectoryPoint{time_from_start: Duration::from_secs_f64(*time), joint_position: source_points[index]}).collect();
+        let velocities = velocities_at_points(source_points, &point_times);
+        let source_velocity_points: Vec<TrajectoryPoint> = point_times.iter().enumerate().map(|(index, time)| TrajectoryPoint{time_from_start: Duration::from_secs_f64(*time), joint_position: velocities[index].into()}).collect();
+        self.plot_joint_trajectories(&folder_path.join("positions.png"), MAX_ANGLES, source_trajectory_points);
         let velocity_trajectory = self.derivative();
-        velocity_trajectory.plot_joint_trajectories(&folder_path.join("velocities.png"), MAX_VELOCITIES);
+        velocity_trajectory.plot_joint_trajectories(&folder_path.join("velocities.png"), MAX_VELOCITIES, source_velocity_points);
         let acceleration_trajectory = velocity_trajectory.derivative();
-        acceleration_trajectory.plot_joint_trajectories(&folder_path.join("accelerations.png"), MAX_ACCELERATIONS);
+        acceleration_trajectory.plot_joint_trajectories(&folder_path.join("accelerations.png"), MAX_ACCELERATIONS, Vec::new());
     }
 
-    fn plot_joint_trajectories(&self, file_path: &Path, limits: [f64; ARM_DEGREES_OF_FREEDOM]) {
+    fn plot_joint_trajectories(&self, file_path: &Path, limits: [f64; ARM_DEGREES_OF_FREEDOM], source_points: Vec<TrajectoryPoint>) {
         let root = BitMapBackend::new(file_path, (1024, 1024)).into_drawing_area();
         root.fill(&WHITE).expect("Couldn't create the canvas");
 
@@ -182,6 +192,17 @@ impl PointTrajectoryExt for PointTrajectory{
                 }),
                 &BLUE,
             )).expect("Couldn't draw the curve");
+
+            // Draw source points
+            chart.draw_series(PointSeries::of_element(
+                source_points.iter().map(|trajectory_point| (trajectory_point.time_from_start.as_secs_f64(), trajectory_point.joint_position[joint_index])),
+                5,
+                &RED,
+                &|c, s, st| {
+                    // Custom symbol for each point (e.g., a circle)
+                    return Circle::new(c, s, st);
+                }
+            )).expect("Couldn't draw the source points");
 
             // Draw horizontal red lines for limits
             chart.draw_series(std::iter::once(PathElement::new(
@@ -364,22 +385,7 @@ pub trait ParametricTrajectoryExt {
 impl ParametricTrajectoryExt for ParametricTrajectory {
     fn from_position_list(points: &Vec<JointPosition>) -> Self {
         let times_from_start = relative_times_from_position_list(points);
-        println!("The times at which we'll cross the points are {times_from_start:?}");
-        let mut velocities: Vec<JointVelocity> = Vec::with_capacity(points.len());
-        velocities.push(JointVelocity([0.0;ARM_DEGREES_OF_FREEDOM]));
-        for index in 1..points.len()-1 {
-            velocities.push((
-                (points[index+1]-points[index])
-                * ((times_from_start[index] - times_from_start[index-1])
-                / (times_from_start[index+1] - times_from_start[index])
-                / (times_from_start[index+1] - times_from_start[index-1]))
-                + (points[index]-points[index-1])
-                * ((times_from_start[index+1] - times_from_start[index])
-                / (times_from_start[index] - times_from_start[index-1])
-                / (times_from_start[index+1] - times_from_start[index-1]))
-            ).into());
-        }
-        velocities.push(JointVelocity([0.0;ARM_DEGREES_OF_FREEDOM]));
+        let velocities = velocities_at_points(points, &times_from_start);
         let mut parametric_trajectory: ParametricTrajectory = Vec::with_capacity(points.len()-1);
         for index in 0..points.len()-1 {
             parametric_trajectory.push(TrajectorySegment::from_positions_and_velocities(points[index], points[index+1], velocities[index], velocities[index+1], Duration::from_secs_f64(times_from_start[index+1] - times_from_start[index])));
@@ -437,6 +443,25 @@ fn relative_times_from_position_list(points: &Vec<JointPosition>) -> Vec<f64> {
         }
     }
     return times;
+}
+
+fn velocities_at_points(points: &Vec<JointPosition>, times_from_start: &Vec<f64>) -> Vec<JointVelocity> {
+    let mut velocities: Vec<JointVelocity> = Vec::with_capacity(points.len());
+    velocities.push(JointVelocity([0.0;ARM_DEGREES_OF_FREEDOM]));
+    for index in 1..points.len()-1 {
+        velocities.push((
+            (points[index+1]-points[index])
+            * ((times_from_start[index] - times_from_start[index-1])
+            / (times_from_start[index+1] - times_from_start[index])
+            / (times_from_start[index+1] - times_from_start[index-1]))
+            + (points[index]-points[index-1])
+            * ((times_from_start[index+1] - times_from_start[index])
+            / (times_from_start[index] - times_from_start[index-1])
+            / (times_from_start[index+1] - times_from_start[index-1]))
+        ).into());
+    }
+    velocities.push(JointVelocity([0.0;ARM_DEGREES_OF_FREEDOM]));
+    return velocities;
 }
 
 
