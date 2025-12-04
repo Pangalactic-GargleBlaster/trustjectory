@@ -104,7 +104,7 @@ fn teach_pendant(publisher: Publisher<JointTrajectory>) {
 }
 
 fn save_trajectory(trajectory: &PointTrajectory, folder_path: &Path, source_points: &Vec<JointPosition>) {
-    fs::create_dir_all(folder_path);
+    fs::create_dir_all(folder_path).expect("Couldn't create the required directory");
     trajectory.save_to_file(&folder_path.join("trajectory.json"));
     trajectory.plot_positions_velocities_and_accelerations(folder_path, source_points);
 }
