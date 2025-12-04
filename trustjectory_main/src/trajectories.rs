@@ -21,7 +21,7 @@ pub const MIN_ANGLES: [f64; ARM_DEGREES_OF_FREEDOM] = [
     -160.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
     0.1
 ];
-const JOINT_MAX_VELOCITY: f64 = 0.25;
+const JOINT_MAX_VELOCITY: f64 = 0.5;
 const MAX_VELOCITIES: [f64; ARM_DEGREES_OF_FREEDOM] = [JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, 0.25];
 const COMBINED_VELOCITY: f64 = JOINT_MAX_VELOCITY;
 const JOINT_DISTANCE_WEIGHTS: [f64; ARM_DEGREES_OF_FREEDOM] = [1.0, 1.0, 1.0, 1.0, 2.0/f64::consts::PI];
@@ -145,7 +145,15 @@ impl PointTrajectoryExt for PointTrajectory{
     }
 
     fn plot_positions_velocities_and_accelerations(&self, folder_path: &Path, source_points: &Vec<JointPosition>) {
-        let point_times = relative_times_from_position_list(source_points);
+        let relative_point_times = relative_times_from_position_list(source_points);
+        let first_guess_velocities = velocities_at_points(source_points, &relative_point_times);
+        let mut parametric_trajectory: ParametricTrajectory = Vec::with_capacity(source_points.len()-1);
+        for index in 0..source_points.len()-1 {
+            parametric_trajectory.push(TrajectorySegment::from_positions_and_velocities(source_points[index], source_points[index+1], first_guess_velocities[index], first_guess_velocities[index+1], Duration::from_secs_f64(relative_point_times[index+1] - relative_point_times[index])));
+        }
+        let velocity_ratio = parametric_trajectory.velocity_ratio().max(1.0);
+        let point_times: Vec<f64> = relative_point_times.iter().map(|time| time*velocity_ratio).collect();
+
         let source_trajectory_points: Vec<TrajectoryPoint> = point_times.iter().enumerate().map(|(index, time)| TrajectoryPoint{time_from_start: Duration::from_secs_f64(*time), joint_position: source_points[index]}).collect();
         let velocities = velocities_at_points(source_points, &point_times);
         let source_velocity_points: Vec<TrajectoryPoint> = point_times.iter().enumerate().map(|(index, time)| TrajectoryPoint{time_from_start: Duration::from_secs_f64(*time), joint_position: velocities[index].into()}).collect();
@@ -380,18 +388,47 @@ pub type ParametricTrajectory = Vec<TrajectorySegment>;
 
 pub trait ParametricTrajectoryExt {
     fn from_position_list(points: &Vec<JointPosition>) -> Self;
+    fn velocity_ratio(&self) -> f64;
 }
 
 impl ParametricTrajectoryExt for ParametricTrajectory {
     fn from_position_list(points: &Vec<JointPosition>) -> Self {
-        let times_from_start = relative_times_from_position_list(points);
-        let velocities = velocities_at_points(points, &times_from_start);
+        let mut times_from_start = relative_times_from_position_list(points);
+        let mut velocities = velocities_at_points(points, &times_from_start);
         let mut parametric_trajectory: ParametricTrajectory = Vec::with_capacity(points.len()-1);
         for index in 0..points.len()-1 {
             parametric_trajectory.push(TrajectorySegment::from_positions_and_velocities(points[index], points[index+1], velocities[index], velocities[index+1], Duration::from_secs_f64(times_from_start[index+1] - times_from_start[index])));
         }
+        let velocity_ratio = parametric_trajectory.velocity_ratio();
+        if velocity_ratio > 1.0 {
+            times_from_start = times_from_start.iter().map(|time| time*velocity_ratio).collect();
+            velocities = velocities_at_points(points, &times_from_start);
+            parametric_trajectory = Vec::with_capacity(points.len()-1);
+            for index in 0..points.len()-1 {
+                parametric_trajectory.push(TrajectorySegment::from_positions_and_velocities(points[index], points[index+1], velocities[index], velocities[index+1], Duration::from_secs_f64(times_from_start[index+1] - times_from_start[index])));
+            }
+        }
         return parametric_trajectory;
     }
+
+    fn velocity_ratio(&self) -> f64 {
+        let mut max_velocity_ratio: f64 = 0.0;
+        let mut max_acceleration_ratio: f64 = 0.0;
+        for segment in self {
+            for joint_index in 0..ARM_DEGREES_OF_FREEDOM{
+                let inflection_time = segment.joint_trajectories[joint_index].inflection_time;
+                let velocity = segment.joint_trajectories[joint_index].first_parabola.derivative();
+                let acceleration = velocity.derivative();
+                max_velocity_ratio = max_velocity_ratio.max(velocity.interpolate(Duration::ZERO).abs() / MAX_VELOCITIES[joint_index]);
+                max_velocity_ratio = max_velocity_ratio.max(velocity.interpolate(inflection_time).abs() / MAX_VELOCITIES[joint_index]);
+                max_acceleration_ratio = max_acceleration_ratio.max(acceleration.interpolate(Duration::ZERO).abs() / MAX_ACCELERATIONS[joint_index]);
+                max_acceleration_ratio = max_acceleration_ratio.max(acceleration.interpolate(inflection_time).abs() / MAX_ACCELERATIONS[joint_index]);
+            }
+        }
+        max_velocity_ratio = max_velocity_ratio.max(max_acceleration_ratio.sqrt());
+        return max_velocity_ratio;
+    }
+
 }
 
 const MIN_SPEED_LIMITED_DISTANCE: f64 = COMBINED_VELOCITY * COMBINED_VELOCITY / COMBINED_ACCELERATION;
