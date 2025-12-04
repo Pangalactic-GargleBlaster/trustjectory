@@ -9,3 +9,4 @@ plot(time, actual_position(:,2), "r-");
 xlabel("Time (s)");
 ylabel("\theta (rad)")
 legend(["Commanded position - first joint","Commanded position - third joint","Actual position - first joint", "Actual position - third joint"])
+title("Tracking accuracy with joint speed 0.25 rad/s")
