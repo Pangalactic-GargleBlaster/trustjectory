@@ -20,7 +20,8 @@ pub fn main() {
     spawner.spawn_local(async move {
         publisher.wait_for_inter_process_subscribers().expect("error before awaiting").await.expect("error in waiting for subscribers");
         println!("connected to subscriber");
-        if std::env::args().collect::<Vec<String>>().contains(&"hardcoded_trajectory".to_string()) {
+        let command_line_args: Vec<String> = std::env::args().collect();
+        if command_line_args.contains(&"hardcoded_trajectory".to_string()) {
             let point_list = vec![
                 JointPosition(HOME_POSITION.0),
                 JointPosition([1.0,0.0,0.0,0.0,0.5]),
@@ -40,9 +41,17 @@ pub fn main() {
             std::thread::sleep(Duration::from_secs(1));
             exit(0);
         }
-        if std::env::args().collect::<Vec<String>>().contains(&"jerk_test".to_string()) {
+        if command_line_args.contains(&"jerk_test".to_string()) {
             println!("Running high jerk test");
             publisher.send_trajectory_to_qarm(&high_jerk_trajectory(Duration::from_secs(60)));
+        }
+        if command_line_args.contains(&"saved_trajectory".to_string()) {
+            println!("Running saved trajectory {}", command_line_args[2]);
+            let trajectoy_path: PathBuf = PathBuf::from("trajectories").join(format!("trajectory{}", command_line_args[2])).join("trajectory.json");
+            let trajectory = PointTrajectory::load_from_file(&trajectoy_path);
+            publisher.send_trajectory_to_qarm(&trajectory);
+            std::thread::sleep(Duration::from_secs(1));
+            exit(0);
         }
         println!("Teach pendant ready!");
         teach_pendant(publisher);

@@ -4,4 +4,6 @@ simulink/*
 !simulink/mock_robot.slx
 !simulink/Robot.slx
 !simulink/Debug.slx
+!simulink/plots.m
+!simulink/Images
 python/Quanser/__pycache__
