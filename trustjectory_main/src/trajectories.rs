@@ -1,5 +1,4 @@
 use core::{f64};
-use std::mem::{self};
 use std::{fs::File, path::Path, time::Duration};
 use std::io::{Read, Write};
 use vector_algebra_macro::VectorAlgebra;
@@ -21,14 +20,14 @@ pub const MIN_ANGLES: [f64; ARM_DEGREES_OF_FREEDOM] = [
     -160.0*DEGREES_TO_RADIANS_MULTIPLICATIVE_FACTOR,
     0.1
 ];
-const JOINT_MAX_VELOCITY: f64 = 0.5;
-const MAX_VELOCITIES: [f64; ARM_DEGREES_OF_FREEDOM] = [JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, 0.25];
+const JOINT_MAX_VELOCITY: f64 = 0.6;
+const MAX_VELOCITIES: [f64; ARM_DEGREES_OF_FREEDOM] = [JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, JOINT_MAX_VELOCITY, 1.2];
 const COMBINED_VELOCITY: f64 = JOINT_MAX_VELOCITY;
-const JOINT_DISTANCE_WEIGHTS: [f64; ARM_DEGREES_OF_FREEDOM] = [1.0, 1.0, 1.0, 1.0, 2.0/f64::consts::PI];
-const JOINT_MAX_ACCELERATION: f64 = 0.25;
-const MAX_ACCELERATIONS: [f64; ARM_DEGREES_OF_FREEDOM] = [JOINT_MAX_ACCELERATION, JOINT_MAX_ACCELERATION, JOINT_MAX_ACCELERATION, JOINT_MAX_ACCELERATION, 1.0];
+const JOINT_DISTANCE_WEIGHTS: [f64; ARM_DEGREES_OF_FREEDOM] = [1.0, 1.0, 1.0, 1.0, 0.5];
+const JOINT_MAX_ACCELERATION: f64 = 0.6;
+const MAX_ACCELERATIONS: [f64; ARM_DEGREES_OF_FREEDOM] = [JOINT_MAX_ACCELERATION, JOINT_MAX_ACCELERATION, JOINT_MAX_ACCELERATION, JOINT_MAX_ACCELERATION, 1.2];
 const COMBINED_ACCELERATION: f64 = JOINT_MAX_ACCELERATION;
-const BASIC_TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_secs(3);
+const BASIC_TRAJECTORY_INTER_POINT_DELAY: Duration = Duration::from_secs(10);
 const TRAJECTORY_SAMPLING_PERIOD: Duration = Duration::from_millis(10);
 
 #[derive(Copy, Clone, Debug, serde::Serialize, serde::Deserialize, VectorAlgebra)]
@@ -401,6 +400,7 @@ impl ParametricTrajectoryExt for ParametricTrajectory {
         }
         let velocity_ratio = parametric_trajectory.velocity_ratio();
         if velocity_ratio > 1.0 {
+            println!("scaling trajectory by a factor of {velocity_ratio}");
             times_from_start = times_from_start.iter().map(|time| time*velocity_ratio).collect();
             velocities = velocities_at_points(points, &times_from_start);
             parametric_trajectory = Vec::with_capacity(points.len()-1);

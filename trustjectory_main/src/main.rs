@@ -1,10 +1,10 @@
-use futures::{executor::{block_on, LocalPool}, task::LocalSpawnExt};
+use futures::{executor::{LocalPool}, task::LocalSpawnExt};
 use gamepad::*;
 use r2r::{std_msgs::msg::Header, trajectory_msgs::msg::JointTrajectory, Publisher, QosProfile};
-use std::{cell::Cell, f64, fs::{self, File}, path::{Path, PathBuf}, process::exit, rc::Rc, time::{Duration, Instant}, vec};
+use std::{f64, fs::{self}, path::{Path, PathBuf}, process::exit, time::{Duration, Instant}, vec};
 use r2r::trajectory_msgs::msg::JointTrajectoryPoint;
 mod trajectories;
-use crate::trajectories::{high_jerk_trajectory, JointPosition, ParametricTrajectory, PointTrajectory, PointTrajectoryExt, ParametricTrajectoryExt, TrajectoryPoint, HOME_POSITION, MAX_ANGLES, MIN_ANGLES};
+use crate::trajectories::{HOME_POSITION, JointPosition, MAX_ANGLES, MIN_ANGLES, ParametricTrajectory, ParametricTrajectoryExt, PointTrajectory, PointTrajectoryExt, TrajectoryPoint, equally_spaced_trajectory, high_jerk_trajectory};
 
 const QOS_PROFILE: QosProfile = QosProfile::sensor_data().reliable().keep_last(1);
 const ROS_SAMPLING_PERIOD: Duration = Duration::from_millis(16);
@@ -20,23 +20,23 @@ pub fn main() {
     spawner.spawn_local(async move {
         publisher.wait_for_inter_process_subscribers().expect("error before awaiting").await.expect("error in waiting for subscribers");
         println!("connected to subscriber");
+        let hardcoded_point_list = vec![
+            JointPosition(HOME_POSITION.0),
+            JointPosition([1.0,0.0,0.0,0.0,0.5]),
+            JointPosition([0.0,0.0,-1.0,0.0,0.5]),
+            JointPosition([-1.0,0.0,0.0,0.0,0.5]),
+            JointPosition([0.0,0.0,1.0,0.0,0.5]),
+            JointPosition([1.0,0.0,0.0,0.0,0.5]),
+            JointPosition([0.0,0.0,-1.0,0.0,0.5]),
+            JointPosition([-1.0,0.0,0.0,0.0,0.5]),
+            JointPosition([0.0,0.0,1.0,0.0,0.5]),
+        ];
         let command_line_args: Vec<String> = std::env::args().collect();
         if command_line_args.contains(&"hardcoded_trajectory".to_string()) {
-            let point_list = vec![
-                JointPosition(HOME_POSITION.0),
-                JointPosition([1.0,0.0,0.0,0.0,0.5]),
-                JointPosition([0.0,0.0,-1.0,0.0,0.5]),
-                JointPosition([-1.0,0.0,0.0,0.0,0.5]),
-                JointPosition([0.0,0.0,1.0,0.0,0.5]),
-                JointPosition([1.0,0.0,0.0,0.0,0.5]),
-                JointPosition([0.0,0.0,-1.0,0.0,0.5]),
-                JointPosition([-1.0,0.0,0.0,0.0,0.5]),
-                JointPosition([0.0,0.0,1.0,0.0,0.5]),
-            ];
             let computation_start_time = Instant::now();
-            let point_trajectory: PointTrajectory = PointTrajectory::from_parametric_trajectory(&ParametricTrajectory::from_position_list(&point_list));
+            let point_trajectory: PointTrajectory = PointTrajectory::from_parametric_trajectory(&ParametricTrajectory::from_position_list(&hardcoded_point_list));
             println!("Time taken to compute trajectory: {:?}", computation_start_time.elapsed());
-            save_trajectory(&point_trajectory, &PathBuf::from("trajectories").join("hardcoded_trajectory"), &point_list);
+            save_trajectory(&point_trajectory, &PathBuf::from("trajectories").join("hardcoded_trajectory"), &hardcoded_point_list);
             publisher.send_trajectory_to_qarm(&point_trajectory);
             std::thread::sleep(Duration::from_secs(1));
             exit(0);
@@ -44,6 +44,16 @@ pub fn main() {
         if command_line_args.contains(&"jerk_test".to_string()) {
             println!("Running high jerk test");
             publisher.send_trajectory_to_qarm(&high_jerk_trajectory(Duration::from_secs(60)));
+            std::thread::sleep(Duration::from_secs(1));
+            exit(0);
+
+        }
+        if command_line_args.contains(&"basic_trajectory".to_string()) {
+            println!("Running basic trajectory");
+            publisher.send_trajectory_to_qarm(&equally_spaced_trajectory(&hardcoded_point_list));
+            std::thread::sleep(Duration::from_secs(1));
+            exit(0);
+
         }
         if command_line_args.contains(&"saved_trajectory".to_string()) {
             println!("Running saved trajectory {}", command_line_args[2]);
